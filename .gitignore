@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+.env
+
+# VS Code
+.vscode/
+
+# Environment
+.env*
+*.env
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Telegram Bot
+bot.session
+
+# Others
+*.sqlite3
+*.db
+
+# Ignore virtual environments
+venv/
+ENV/
+.envrc
+
+# Ignore test outputs
+htmlcov/
+coverage.xml
+*.cover
+
+# Ignore Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
