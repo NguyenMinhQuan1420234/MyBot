@@ -5,8 +5,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder, MessageHandler, filters
-from message import handle_message
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
+from message import handle_message, handle_gold
 
 async def on_startup(app):
     logging.info("Bot is up and running!")
@@ -62,6 +62,7 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler('gold', handle_gold))
     app.run_polling()
 
 if __name__ == '__main__':
