@@ -155,9 +155,24 @@ class Agent:
                         buying = item.get('buyingPrice') if 'buyingPrice' in item else item.get('Buy') if 'Buy' in item else item.get('buy')
                         selling = item.get('sellingPrice') if 'sellingPrice' in item else item.get('Sell') if 'Sell' in item else item.get('sell')
                         dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
-                        # Safe string conversion
-                        b_str = str(buying) if buying is not None else 'N/A'
-                        s_str = str(selling) if selling is not None else 'N/A'
+                        # Safe formatting with thousands separators
+                        def format_price(val):
+                            if val is None:
+                                return 'N/A'
+                            try:
+                                num = float(val)
+                                return f"{int(round(num)):,}"
+                            except Exception:
+                                # try to parse integers from strings with commas
+                                try:
+                                    cleaned = str(val).replace(',', '').strip()
+                                    num = float(cleaned)
+                                    return f"{int(round(num)):,}"
+                                except Exception:
+                                    return str(val)
+
+                        b_str = format_price(buying)
+                        s_str = format_price(selling)
                         dt_str = str(dt)
                         formatted = f"Giá của vàng {code} ngày {dt_str}:\n  - Giá mua: {b_str}\n  - Giá bán: {s_str}\n"
                         formatted_items.append(formatted)
