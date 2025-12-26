@@ -46,7 +46,8 @@ if 'TELE_BOT_TOKEN' not in os.environ:
             except Exception:
                 pass
 
-TOKEN = os.getenv("TELE_BOT_TOKEN")
+# Do not resolve TELE_BOT_TOKEN here; allow CLI override later
+_ENV_TOKEN = os.getenv("TELE_BOT_TOKEN")
 
 
 import argparse
@@ -61,6 +62,7 @@ def main():
     parser.add_argument('--api_version', type=str, help='Azure OpenAI API version (optional)')
     parser.add_argument('--api-key', type=str, help='API key to use (overrides env)')
     parser.add_argument('--gemini-key', type=str, help='Gemini API key specifically (overrides env when provider is gemini)')
+    parser.add_argument('--tele-token', type=str, help='Telegram bot token (overrides env TELE_BOT_TOKEN)')
     args = parser.parse_args()
 
     # Automatically read API key from environment
@@ -93,7 +95,12 @@ def main():
         agent_kwargs['api_version'] = args.api_version
     set_agent(args.provider, api_key, **agent_kwargs)
 
-    app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
+    # Determine Telegram token: CLI overrides env
+    token = args.tele_token if getattr(args, 'tele_token', None) else _ENV_TOKEN
+    if not token:
+        raise ValueError("Telegram bot token not found. Set TELE_BOT_TOKEN env var or pass --tele-token.")
+
+    app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
     app.run_polling()
