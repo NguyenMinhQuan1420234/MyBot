@@ -17,8 +17,8 @@ jobs:
 
     runs-on: ubuntu-latest
     env:
-      TELE_BOT_TOKEN: ${{ secrets.TELE_BOT_TOKEN }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELE_BOT_TOKEN: ${{ vars.TELE_BOT_TOKEN }}
+      GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
 
     steps:
     - uses: actions/checkout@v4
@@ -47,4 +47,4 @@ jobs:
 
     - name: deploy service
       run: |
-        python BOT.py --provider gemini
+        python BOT.py --provider gemini --gemini-key GEMINI_API_KEY
