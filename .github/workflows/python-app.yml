@@ -11,14 +11,14 @@ on:
 
 permissions:
   contents: read
-
-env:
-  TELE_BOT_TOKEN: ${{ vars.TELE_BOT_TOKEN }}
-  GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
+  issues: write
 
 jobs:
   build:
-
+    environment: production
+    env:
+      TELE_BOT_TOKEN: ${{ vars.TELE_BOT_TOKEN }}
+      GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
