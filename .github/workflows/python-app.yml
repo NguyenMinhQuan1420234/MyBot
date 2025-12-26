@@ -35,9 +35,6 @@ jobs:
         else
           pip install python-telegram-bot python-dotenv requests google-generativeai
         fi
-    - name: deploy service
-      run: |
-        python BOT.py --provider gemini --gemini-key ${{ secrets.GEMINI_API_KEY }}
 
     - name: Create BOT_TOKEN.env from secrets (for compatibility)
       if: always()
@@ -47,3 +44,7 @@ jobs:
         GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
         EOF
       shell: bash
+
+    - name: deploy service
+      run: |
+        python BOT.py --provider gemini
