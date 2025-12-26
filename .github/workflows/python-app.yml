@@ -38,4 +38,4 @@ jobs:
 
     - name: deploy service
       run: |
-        python BOT.py --provider gemini --gemini-key GEMINI_API_KEY --tele-token TELE_BOT_TOKEN
+        python BOT.py --provider gemini --gemini-key ${{ env.GEMINI_API_KEY }} --tele-token ${{ env.TELE_BOT_TOKEN }}
