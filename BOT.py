@@ -59,6 +59,8 @@ def main():
     parser.add_argument('--api_base', type=str, help='Azure OpenAI API base (optional)')
     parser.add_argument('--deployment', type=str, help='Azure OpenAI deployment name (optional)')
     parser.add_argument('--api_version', type=str, help='Azure OpenAI API version (optional)')
+    parser.add_argument('--api-key', type=str, help='API key to use (overrides env)')
+    parser.add_argument('--gemini-key', type=str, help='Gemini API key specifically (overrides env when provider is gemini)')
     args = parser.parse_args()
 
     # Automatically read API key from environment
@@ -68,9 +70,17 @@ def main():
         'xai': 'XAI_API_KEY',
         'azure': 'AZURE_API_KEY'
     }
-    api_key = os.getenv(env_key_map.get(args.provider))
+    # Determine API key precedence: CLI --api-key, then provider-specific CLI (e.g. --gemini-key), then environment
+    api_key = None
+    if args.api_key:
+        api_key = args.api_key
+    elif args.provider == 'gemini' and getattr(args, 'gemini_key', None):
+        api_key = args.gemini_key
+    else:
+        api_key = os.getenv(env_key_map.get(args.provider))
+
     if not api_key:
-        raise ValueError(f"API key for provider '{args.provider}' not found in BOT_TOKEN.env.")
+        raise ValueError(f"API key for provider '{args.provider}' not found. Provide via env or --api-key/--{args.provider}-key CLI option.")
 
     agent_kwargs = {}
     if args.model:
