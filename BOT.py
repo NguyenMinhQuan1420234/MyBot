@@ -4,7 +4,10 @@ import sys
 import logging
 from logging.handlers import RotatingFileHandler
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
 from message import handle_message, handle_gold
 
@@ -21,8 +24,28 @@ logging.basicConfig(
     ]
 )
 
-# Load environment variables from .env file
-load_dotenv("BOT_TOKEN.env")
+# Load environment variables: prefer existing env (GitHub Actions), otherwise try .env
+if 'TELE_BOT_TOKEN' not in os.environ:
+    if load_dotenv:
+        load_dotenv("BOT_TOKEN.env")
+    else:
+        # Try to read BOT_TOKEN.env manually if present
+        env_path = "BOT_TOKEN.env"
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        if '=' in line:
+                            k, v = line.split('=', 1)
+                            k = k.strip()
+                            v = v.strip()
+                            os.environ.setdefault(k, v)
+            except Exception:
+                pass
+
 TOKEN = os.getenv("TELE_BOT_TOKEN")
 
 
