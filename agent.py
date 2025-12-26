@@ -8,6 +8,12 @@ try:
     import requests
 except ImportError:
     requests = None
+import ssl
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    urllib3 = None
 import urllib.request
 import urllib.error
 
@@ -96,15 +102,24 @@ class Agent:
         otherwise returns the raw response text. On error returns a
         descriptive string.
         """
-        url = "https://sjc.com.vn/GoldPrice/Services/PriceService.ashx"
+        url = "https://mihong.vn/api/v1/gold/prices/current"
+        headers = {
+            'x-requested-with': 'XMLHttpRequest',
+            'referer': 'https://mihong.vn/vi/gia-vang-trong-nuoc',
+            'Cookie': 'laravel_session=BjzTy5xwYchpU94uwsemKJZ4L5dqrLQ01iEgogfx'
+        }
         try:
             if requests:
-                resp = requests.get(url, timeout=10)
+                # disable SSL verification per user request
+                resp = requests.get(url, timeout=10, headers=headers, verify=False)
                 resp.raise_for_status()
                 text = resp.text
                 content_type = resp.headers.get("Content-Type", "")
             else:
-                with urllib.request.urlopen(url, timeout=10) as r:
+                req = urllib.request.Request(url, headers=headers)
+                # create an unverified SSL context to skip cert verification
+                ctx = ssl._create_unverified_context()
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
                     content_type = r.getheader("Content-Type", "")
                     text = r.read().decode("utf-8")
 
@@ -127,27 +142,30 @@ class Agent:
                     else:
                         items = data
 
-                    # Filter by BranchName and TypeName, then return only desired fields
-                    allowed_types = {
-                        "Vàng SJC 1L, 10L, 1KG",
-                        "Vàng nhẫn SJC 99,99% 1 chỉ, 2 chỉ, 5 chỉ",
-                    }
-                    filtered = []
+                    # Filter by `code` and map price fields to Buy/Sell
+                    allowed_codes = {"SJC", "999"}
+                    formatted_items = []
                     for item in items:
                         if not isinstance(item, dict):
                             continue
-                        branch = (item.get('BranchName') or '').strip()
-                        tname = (item.get('TypeName') or '').strip()
-                        if branch != 'Hồ Chí Minh':
+                        code = (item.get('code') or item.get('Code') or '').strip()
+                        if code not in allowed_codes:
                             continue
-                        if tname not in allowed_types:
-                            continue
-                        filtered.append({
-                            'TypeName': tname,
-                            'Buy': item.get('Buy'),
-                            'Sell': item.get('Sell')
-                        })
-                    return {'data': filtered}
+                        # Extract prices and datetime with fallbacks
+                        buying = item.get('buyingPrice') if 'buyingPrice' in item else item.get('Buy') if 'Buy' in item else item.get('buy')
+                        selling = item.get('sellingPrice') if 'sellingPrice' in item else item.get('Sell') if 'Sell' in item else item.get('sell')
+                        dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
+                        # Safe string conversion
+                        b_str = str(buying) if buying is not None else 'N/A'
+                        s_str = str(selling) if selling is not None else 'N/A'
+                        dt_str = str(dt)
+                        formatted = f"Giá của vàng {code} ngày {dt_str}:\n  - Giá mua: {b_str}\n  - Giá bán: {s_str}\n"
+                        formatted_items.append(formatted)
+
+                    if not formatted_items:
+                        return "Không tìm thấy dữ liệu giá vàng phù hợp."
+                    # Join multiple entries with a blank line
+                    return "\n".join(formatted_items)
                 return parsed
             except Exception:
                 pass
