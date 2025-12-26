@@ -11,15 +11,15 @@ on:
 
 permissions:
   contents: read
+  
+env:
+  TELE_BOT_TOKEN: ${{ vars.TELE_BOT_TOKEN }}
+  GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
 
 jobs:
   build:
 
     runs-on: ubuntu-latest
-    env:
-      TELE_BOT_TOKEN: ${{ vars.TELE_BOT_TOKEN }}
-      GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
-
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python 3.10
