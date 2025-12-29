@@ -2,6 +2,7 @@ import logging
 import json
 import xml.etree.ElementTree as ET
 from mcp_playwright_agent import MCPPlaywrightAgent
+from api_client import APIClient
 
 # Prefer requests if available, fall back to urllib
 try:
@@ -16,6 +17,7 @@ except Exception:
     urllib3 = None
 import urllib.request
 import urllib.error
+import time
 
 # Optional imports for AI providers
 try:
@@ -39,6 +41,8 @@ class Agent:
         self.api_key = api_key
         self.kwargs = kwargs
         self.mcp_agent = MCPPlaywrightAgent()
+        # initialize a reusable API client (disable SSL verification for legacy endpoints)
+        self.api_client = APIClient(verify=False)
 
         if self.provider == "gemini" and genai:
             genai.configure(api_key=api_key)
@@ -96,128 +100,107 @@ class Agent:
         return self.mcp_agent.run_command(command)
 
     def get_gold_price(self):
-        """Fetch gold price from SJC public API.
-
-        Returns parsed JSON or XML as Python objects when possible,
-        otherwise returns the raw response text. On error returns a
-        descriptive string.
-        """
+        """Shorter implementation: use APIClient for HTTP and keep concise parsing/formatting."""
         url = "https://mihong.vn/api/v1/gold/prices/current"
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'referer': 'https://mihong.vn/vi/gia-vang-trong-nuoc',
             'Cookie': 'laravel_session=BjzTy5xwYchpU94uwsemKJZ4L5dqrLQ01iEgogfx'
         }
-        try:
-            if requests:
-                # disable SSL verification per user request
-                resp = requests.get(url, timeout=10, headers=headers, verify=False)
-                resp.raise_for_status()
-                text = resp.text
-                content_type = resp.headers.get("Content-Type", "")
+        # Retry logic: attempt up to 5 times with incremental backoff
+        max_retries = 5
+        resp = None
+        for attempt in range(1, max_retries + 1):
+            resp = self.api_client.get(url, headers=headers, timeout=10, verify=False)
+            if resp.get('ok'):
+                break
+            logging.warning("Gold API request failed (attempt %d/%d): %s", attempt, max_retries, resp.get('error'))
+            if attempt < max_retries:
+                # simple backoff: sleep 1s, 2s, 3s, ...
+                time.sleep(attempt)
+        else:
+            # all attempts failed
+            err = resp.get('error') if resp is not None else 'unknown error'
+            return f"Error fetching gold price after {max_retries} attempts: {err}"
+
+        text = resp.get('text', '')
+        parsed = resp.get('json')
+
+        def fmt_price(val):
+            if val is None:
+                return 'N/A'
+            try:
+                num = float(str(val).replace(',', '').strip())
+                return f"{int(round(num)):,}"
+            except Exception:
+                return str(val)
+
+        # Prefer JSON structured response
+        if isinstance(parsed, dict) and 'data' in parsed:
+            data = parsed.get('data') or []
+            # normalize to list
+            if isinstance(data, dict):
+                items = [v for v in (x for x in data.values()) if isinstance(v, dict) or isinstance(v, list)]
+                # flatten lists
+                flat = []
+                for it in items:
+                    if isinstance(it, list):
+                        flat.extend([x for x in it if isinstance(x, dict)])
+                    elif isinstance(it, dict):
+                        flat.append(it)
+                if not flat:
+                    flat = [data]
+                items = flat
             else:
-                req = urllib.request.Request(url, headers=headers)
-                # create an unverified SSL context to skip cert verification
-                ctx = ssl._create_unverified_context()
-                with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
-                    content_type = r.getheader("Content-Type", "")
-                    text = r.read().decode("utf-8")
+                items = data
 
-            # Try JSON and filter to only the `data` field with selected keys
-            try:
-                parsed = json.loads(text)
-                if isinstance(parsed, dict) and 'data' in parsed:
-                    data = parsed.get('data') or []
-                    # Normalize to list of items
-                    if isinstance(data, dict):
-                        items = []
-                        for v in data.values():
-                            if isinstance(v, list):
-                                items.extend(v)
-                            elif isinstance(v, dict):
-                                items.append(v)
-                        # if nothing collected, treat the dict itself as one item
-                        if not items:
-                            items = [data]
-                    else:
-                        items = data
+            allowed = {"SJC", "999"}
+            out = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                code = (item.get('code') or item.get('Code') or '').strip()
+                if code not in allowed:
+                    continue
+                buying = item.get('buyingPrice') or item.get('Buy') or item.get('buy')
+                selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
+                dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
+                out.append(f"Giá của vàng {code} ngày {dt}:\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}\n")
+            return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
 
-                    # Filter by `code` and map price fields to Buy/Sell
-                    allowed_codes = {"SJC", "999"}
-                    formatted_items = []
-                    for item in items:
-                        if not isinstance(item, dict):
+        # Try XML fallback
+        try:
+            root = ET.fromstring(text)
+            def elem_to_dict(e):
+                if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
+                    return None
+                d = {}
+                for k, v in e.attrib.items():
+                    d[f"@{k}"] = v
+                children = list(e)
+                if children:
+                    for c in children:
+                        val = elem_to_dict(c)
+                        if val is None:
                             continue
-                        code = (item.get('code') or item.get('Code') or '').strip()
-                        if code not in allowed_codes:
-                            continue
-                        # Extract prices and datetime with fallbacks
-                        buying = item.get('buyingPrice') if 'buyingPrice' in item else item.get('Buy') if 'Buy' in item else item.get('buy')
-                        selling = item.get('sellingPrice') if 'sellingPrice' in item else item.get('Sell') if 'Sell' in item else item.get('sell')
-                        dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
-                        # Safe formatting with thousands separators
-                        def format_price(val):
-                            if val is None:
-                                return 'N/A'
-                            try:
-                                num = float(val)
-                                return f"{int(round(num)):,}"
-                            except Exception:
-                                # try to parse integers from strings with commas
-                                try:
-                                    cleaned = str(val).replace(',', '').strip()
-                                    num = float(cleaned)
-                                    return f"{int(round(num)):,}"
-                                except Exception:
-                                    return str(val)
-
-                        b_str = format_price(buying)
-                        s_str = format_price(selling)
-                        dt_str = str(dt)
-                        formatted = f"Giá của vàng {code} ngày {dt_str}:\n  - Giá mua: {b_str}\n  - Giá bán: {s_str}\n"
-                        formatted_items.append(formatted)
-
-                    if not formatted_items:
-                        return "Không tìm thấy dữ liệu giá vàng phù hợp."
-                    # Join multiple entries with a blank line
-                    return "\n".join(formatted_items)
-                return parsed
-            except Exception:
-                pass
-
-            # Try XML
-            try:
-                root = ET.fromstring(text)
-
-                def elem_to_dict(e):
-                    d = {}
-                    if e.attrib:
-                        d.update({f"@{k}": v for k, v in e.attrib.items()})
-                    children = list(e)
-                    if children:
-                        for c in children:
-                            tag = c.tag
-                            val = elem_to_dict(c)
-                            if tag in d:
-                                if isinstance(d[tag], list):
-                                    d[tag].append(val)
-                                else:
-                                    d[tag] = [d[tag], val]
+                        if c.tag in d:
+                            if isinstance(d[c.tag], list):
+                                d[c.tag].append(val)
                             else:
-                                d[tag] = val
-                    text_val = e.text.strip() if e.text and e.text.strip() else None
-                    if text_val and not children and not e.attrib:
+                                d[c.tag] = [d[c.tag], val]
+                        else:
+                            d[c.tag] = val
+                text_val = e.text.strip() if e.text and e.text.strip() else None
+                if text_val:
+                    if d:
+                        d['#text'] = text_val
+                    else:
                         return text_val
-                    if text_val:
-                        d["#text"] = text_val
-                    return d
+                return d
+            xml_parsed = elem_to_dict(root)
+            return xml_parsed
+        except Exception:
+            pass
 
-                return elem_to_dict(root)
-            except Exception:
-                pass
-
-            # Fallback: return raw text
-            return text
-        except Exception as e:
-            logging.exception("Failed to fetch gold price")
-            return f"Error fetching gold price: {e}"
+        # Fallback: return raw text
+        return text
