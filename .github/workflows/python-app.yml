@@ -41,6 +41,7 @@ jobs:
         else
           pip install python-telegram-bot python-dotenv requests google-generativeai
         fi
+        pip install "python-telegram-bot[job-queue]"
 
     - name: deploy service
       run: |
