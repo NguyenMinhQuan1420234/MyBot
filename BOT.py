@@ -51,6 +51,7 @@ _ENV_TOKEN = os.getenv("TELE_BOT_TOKEN")
 
 
 import argparse
+from zoneinfo import ZoneInfo
 from message import set_agent
 
 def main():
@@ -103,8 +104,9 @@ def main():
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
-    # Schedule daily gold price messages at 09:00, 12:00, 15:00 and 18:00
+    # Schedule daily gold price messages at 09:00, 12:00, 15:00 and 18:00 Hanoi time (GMT+7)
     from datetime import time as dt_time
+
     def _parse_chat_ids():
         env = os.getenv("GOLD_CHAT_IDS") or os.getenv("GOLD_CHAT_ID")
         if not env:
@@ -114,16 +116,18 @@ def main():
             part = part.strip()
             if not part:
                 continue
+            # Accept numeric chat IDs or usernames (@channelusername). Keep as int when possible.
             try:
                 ids.append(int(part))
             except Exception:
-                logging.warning(f"Invalid GOLD_CHAT_ID value: {part}")
+                ids.append(part)
         return ids
 
     async def _scheduled_gold_job(context):
         chat_ids = _parse_chat_ids()
         if not chat_ids:
             logging.info("No GOLD_CHAT_ID(S) configured; skipping scheduled gold job.")
+            logging.info("Set GOLD_CHAT_ID or GOLD_CHAT_IDS (comma-separated) in env or workflow.")
             return
         for cid in chat_ids:
             try:
@@ -131,9 +135,26 @@ def main():
             except Exception as e:
                 logging.exception(f"Failed sending scheduled gold to {cid}: {e}")
 
-    schedule_times = [(9, 0), (12, 0), (15, 0), (18, 0)]
-    for h, m in schedule_times:
-        app.job_queue.run_daily(_scheduled_gold_job, dt_time(hour=h, minute=m))
+    # Use Hanoi timezone (Asia/Ho_Chi_Minh) so times align with GMT+7 regardless of host TZ
+    try:
+        hanoi_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    except Exception:
+        hanoi_tz = None
+
+    jobq = getattr(app, 'job_queue', None)
+    if not jobq:
+        logging.warning(
+            "No JobQueue set up; skipping scheduled gold jobs. "
+            "To enable scheduling install: pip install \"python-telegram-bot[job-queue]\""
+        )
+    else:
+        schedule_times = [(9, 0), (12, 0), (15, 0), (18, 0)]
+        for h, m in schedule_times:
+            if hanoi_tz:
+                t = dt_time(hour=h, minute=m, tzinfo=hanoi_tz)
+            else:
+                t = dt_time(hour=h, minute=m)
+            jobq.run_daily(_scheduled_gold_job, t)
     app.run_polling()
 
 if __name__ == '__main__':
