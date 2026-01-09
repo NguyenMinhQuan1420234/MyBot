@@ -9,7 +9,7 @@ try:
 except Exception:
     load_dotenv = None
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
-from message import handle_message, handle_gold
+from message import handle_message, handle_gold, send_gold_to
 
 async def on_startup(app):
     logging.info("Bot is up and running!")
@@ -103,6 +103,37 @@ def main():
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
+    # Schedule daily gold price messages at 09:00, 12:00, 15:00 and 18:00
+    from datetime import time as dt_time
+    def _parse_chat_ids():
+        env = os.getenv("GOLD_CHAT_IDS") or os.getenv("GOLD_CHAT_ID")
+        if not env:
+            return []
+        ids = []
+        for part in env.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ids.append(int(part))
+            except Exception:
+                logging.warning(f"Invalid GOLD_CHAT_ID value: {part}")
+        return ids
+
+    async def _scheduled_gold_job(context):
+        chat_ids = _parse_chat_ids()
+        if not chat_ids:
+            logging.info("No GOLD_CHAT_ID(S) configured; skipping scheduled gold job.")
+            return
+        for cid in chat_ids:
+            try:
+                await send_gold_to(cid, context)
+            except Exception as e:
+                logging.exception(f"Failed sending scheduled gold to {cid}: {e}")
+
+    schedule_times = [(9, 0), (12, 0), (15, 0), (18, 0)]
+    for h, m in schedule_times:
+        app.job_queue.run_daily(_scheduled_gold_job, dt_time(hour=h, minute=m))
     app.run_polling()
 
 if __name__ == '__main__':

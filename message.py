@@ -49,7 +49,12 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    logging.info(f"User({chat_id}) requested gold price")
+    await send_gold_to(chat_id, context)
+
+
+async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    """Send gold price to a given chat id (used by command and scheduled jobs)."""
+    logging.info(f"Sending gold price to chat {chat_id}")
     if not agent:
         await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
         return
