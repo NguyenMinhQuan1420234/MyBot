@@ -108,7 +108,9 @@ def main():
     from datetime import time as dt_time
 
     def _parse_chat_ids():
-        env = os.getenv("GOLD_CHAT_IDS") or os.getenv("GOLD_CHAT_ID")
+        # Read chat ids from the pipeline-provided TELE_BOT_TOKEN variable
+        # (accept comma-separated values). Keep numeric IDs as int.
+        env = os.getenv("TELE_BOT_TOKEN")
         if not env:
             return []
         ids = []
@@ -116,7 +118,6 @@ def main():
             part = part.strip()
             if not part:
                 continue
-            # Accept numeric chat IDs or usernames (@channelusername). Keep as int when possible.
             try:
                 ids.append(int(part))
             except Exception:
@@ -126,9 +127,9 @@ def main():
     async def _scheduled_gold_job(context):
         chat_ids = _parse_chat_ids()
         if not chat_ids:
-            logging.info("No GOLD_CHAT_ID(S) configured; skipping scheduled gold job.")
-            logging.info("Set GOLD_CHAT_ID or GOLD_CHAT_IDS (comma-separated) in env or workflow.")
-            return
+            # Default to a known chat id when no TELE_BOT_TOKEN chat ids provided
+            logging.info("No TELE_BOT_TOKEN chat IDs configured; using default chat id.")
+            chat_ids = [-1002713059877]
         for cid in chat_ids:
             try:
                 await send_gold_to(cid, context)
