@@ -136,6 +136,7 @@ def main():
             except Exception as e:
                 logging.exception(f"Failed sending scheduled gold to {cid}: {e}")
 
+    
     # Use Hanoi timezone (Asia/Ho_Chi_Minh) so times align with GMT+7 regardless of host TZ
     try:
         hanoi_tz = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -149,13 +150,14 @@ def main():
             "To enable scheduling install: pip install \"python-telegram-bot[job-queue]\""
         )
     else:
-        schedule_times = [(9, 0), (12, 0), (15, 0), (18, 0)]
+        schedule_times = [(9, 0), (14, 0)]
         for h, m in schedule_times:
             if hanoi_tz:
                 t = dt_time(hour=h, minute=m, tzinfo=hanoi_tz)
             else:
                 t = dt_time(hour=h, minute=m)
             jobq.run_daily(_scheduled_gold_job, t)
+        # Schedule a one-off "hello" to run in 5 minutes (300 seconds)
     app.run_polling()
 
 if __name__ == '__main__':
