@@ -1,4 +1,3 @@
-
 import os
 import sys
 import logging
@@ -105,37 +104,38 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
     # Schedule daily gold price messages at 09:00, 12:00, 15:00 and 18:00 Hanoi time (GMT+7)
-    from datetime import time as dt_time
-
-    def _parse_chat_ids():
-        # Read chat ids from the pipeline-provided TELE_BOT_TOKEN variable
-        # (accept comma-separated values). Keep numeric IDs as int.
-        env = os.getenv("TELE_BOT_TOKEN")
-        if not env:
-            return []
-        ids = []
-        for part in env.split(','):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                ids.append(int(part))
-            except Exception:
-                ids.append(part)
-        return ids
+    from datetime import time as dt_time, datetime, timedelta
 
     async def _scheduled_gold_job(context):
-        chat_ids = _parse_chat_ids()
-        if not chat_ids:
-            # Default to a known chat id when no TELE_BOT_TOKEN chat ids provided
-            logging.info("No TELE_BOT_TOKEN chat IDs configured; using default chat id.")
-            chat_ids = [-1002713059877]
+        """Send gold price only when current time in GMT+7 matches one of schedule_times.
+
+        This avoids relying on the host timezone. If ZoneInfo is not available, fall back to UTC+7 arithmetic.
+        """
+        # compute current time in GMT+7
+        try:
+            now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        except Exception:
+            now = datetime.utcnow() + timedelta(hours=7)
+
+        current_hm = (now.hour, now.minute)
+        # schedule_times is defined below; use it if present, otherwise use defaults
+        try:
+            scheduled = schedule_times
+        except NameError:
+            scheduled = [(9, 0), (12, 0), (15, 0), (18, 0)]
+
+        if current_hm not in scheduled:
+            logging.info("Skipping scheduled gold job; GMT+7 time %02d:%02d not in schedule", now.hour, now.minute)
+            return
+
+        # time matches — send to configured chat ids (or default)
+        chat_ids = [-1002713059877]
+ 
         for cid in chat_ids:
             try:
                 await send_gold_to(cid, context)
             except Exception as e:
                 logging.exception(f"Failed sending scheduled gold to {cid}: {e}")
-
     
     # Use Hanoi timezone (Asia/Ho_Chi_Minh) so times align with GMT+7 regardless of host TZ
     try:
@@ -157,7 +157,6 @@ def main():
             else:
                 t = dt_time(hour=h, minute=m)
             jobq.run_daily(_scheduled_gold_job, t)
-        # Schedule a one-off "hello" to run in 5 minutes (300 seconds)
     app.run_polling()
 
 if __name__ == '__main__':
