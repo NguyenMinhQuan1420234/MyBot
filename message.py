@@ -52,6 +52,44 @@ async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
     await send_gold_to(chat_id, context)
 
 
+async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /money command. Usage: /money USD"""
+    chat_id = update.effective_chat.id
+    if not agent:
+        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
+        return
+    args = getattr(context, 'args', []) or []
+    note = ''
+    if not args:
+        code = 'usd'
+        note = 'Hãy nhập đơn vị tiền tệ bạn muốn sau câu lệnh\n'
+    else:
+        code = args[0]
+
+    try:
+        result = agent.get_money_rate(code)
+    except Exception as e:
+        result = f"Lỗi lấy thông tin tiền tệ: {e}"
+
+    # If agent returned structured dict with only the required keys, format to text
+    if isinstance(result, dict):
+        name = result.get('name', '')
+        buy = result.get('buy', '')
+        sell = result.get('sell', '')
+        text = f"{note}{name}:\n mua: {buy}\n bán: {sell}\n"
+    else:
+        text = f"{note}{result}"
+    for i in range(0, len(text), 4096):
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096])
+
+
+async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
+    """Respond to /help with supported commands summary."""
+    chat_id = update.effective_chat.id
+    text = "Bot dỏm Tele hiện đang hỗ trợ 2 lệnh /gold và /money"
+    await context.bot.send_message(chat_id=chat_id, text=text)
+
+
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
     """Send gold price to a given chat id (used by command and scheduled jobs)."""
     logging.info(f"Sending gold price to chat {chat_id}")

@@ -8,7 +8,7 @@ try:
 except Exception:
     load_dotenv = None
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
-from message import handle_message, handle_gold, send_gold_to
+from message import handle_message, handle_gold, send_gold_to, handle_money, handle_help
 
 async def on_startup(app):
     logging.info("Bot is up and running!")
@@ -103,6 +103,8 @@ def main():
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
+    app.add_handler(CommandHandler('money', handle_money))
+    app.add_handler(CommandHandler('help', handle_help))
     # Schedule daily gold price messages at 09:00, 12:00, 15:00 and 18:00 Hanoi time (GMT+7)
     from datetime import time as dt_time, datetime, timedelta
 

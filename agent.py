@@ -1,6 +1,7 @@
 import logging
 import json
 import xml.etree.ElementTree as ET
+import re
 from mcp_playwright_agent import MCPPlaywrightAgent
 from api_client import APIClient
 
@@ -165,8 +166,58 @@ class Agent:
                 buying = item.get('buyingPrice') or item.get('Buy') or item.get('buy')
                 selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
                 dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
-                out.append(f"Giá của vàng {code} ngày {dt}:\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}\n")
-            return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
+                out.append(f"- {code} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
+            mi_hong_text = "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
+
+            # Fetch Doji data and include beneath Mi Hồng results
+            doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
+            try:
+                resp2 = self.api_client.get(doji_url, timeout=10, verify=False)
+            except Exception as e:
+                resp2 = {'ok': False, 'error': str(e)}
+
+            if resp2.get('ok'):
+                raw = (resp2.get('text') or '')
+                if raw.strip():
+                    # Parse HTML table rows and extract requested labels/prices
+                    # Targets: "SJC - Bán Lẻ", "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ"
+                    try:
+                        rows = re.findall(r'<tr[^>]*>.*?</tr>', raw, flags=re.S | re.I)
+                        targets = [
+                            "SJC - Bán Lẻ",
+                            "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ",
+                        ]
+                        found = []
+                        for tr in rows:
+                            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, flags=re.S | re.I)
+                            if not tds:
+                                continue
+                            # clean inner HTML from each td
+                            clean = [re.sub(r'<.*?>', '', td).strip() for td in tds]
+                            label = clean[0]
+                            # match exact label or contains
+                            if any(label == t or t in label for t in targets):
+                                # find numeric-like values in following tds
+                                nums = []
+                                for td in clean[1:]:
+                                    m = re.search(r'([0-9][0-9\.,]+)', td)
+                                    if m:
+                                        nums.append(m.group(1))
+                                buy = nums[0] if len(nums) > 0 else 'N/A'
+                                sell = nums[1] if len(nums) > 1 else ('N/A' if len(nums) > 0 else 'N/A')
+                                found.append(f"- {label}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}")
+                        if found:
+                            doji_text = "\n".join(found)
+                        else:
+                            doji_text = "Không tìm thấy mục Doji phù hợp."
+                    except Exception as e:
+                        doji_text = f"Lỗi phân tích Doji: {e}"
+                else:
+                    doji_text = "Không có dữ liệu từ Doji."
+            else:
+                doji_text = f"Lỗi khi lấy Doji: {resp2.get('error')}"
+
+            return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}"
 
         # Try XML fallback
         try:
@@ -204,3 +255,64 @@ class Agent:
 
         # Fallback: return raw text
         return text
+
+    def get_money_rate(self, code='usd'):
+        """Fetch fiat exchange info from external API and return formatted result.
+
+        The API returns a JSON payload; we try to find the requested currency code
+        (case-insensitive). If not found, return a helpful message.
+        """
+        url = "https://exchange.goonus.io/exchange/api/v1/fiat"
+        try:
+            resp = self.api_client.get(url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi gọi API tiền tệ: {e}"
+
+        if not resp.get('ok'):
+            return f"Lỗi khi lấy dữ liệu tiền tệ: {resp.get('error')}"
+        parsed = resp.get('json')
+        text = resp.get('text') or ''
+
+        code_norm = (code or 'usd').strip().lower()
+
+        # Expected sample shape: {"data": [ {"name": "Đô la Mỹ", "code": "USD", "buy": "26061.00", "sell": "26381.00", ... } ] }
+        if isinstance(parsed, dict) and 'data' in parsed and isinstance(parsed['data'], list):
+            items = parsed['data']
+            for itm in items:
+                if not isinstance(itm, dict):
+                    continue
+                itm_code = str(itm.get('code') or '').strip().lower()
+                if itm_code == code_norm:
+                    name = itm.get('name') or itm.get('code') or code.upper()
+                    buy = itm.get('buy') or ''
+                    sell = itm.get('sell') or ''
+                    return {
+                        'name': str(name),
+                        'code': str(itm_code).upper(),
+                        'buy': str(buy),
+                        'sell': str(sell),
+                    }
+            return f"Không tìm thấy thông tin cho mã tiền tệ '{code}'."
+
+        # fallback: try to parse text as JSON and repeat
+        try:
+            j = json.loads(text)
+            if isinstance(j, dict) and 'data' in j and isinstance(j['data'], list):
+                for itm in j['data']:
+                    if not isinstance(itm, dict):
+                        continue
+                    itm_code = str(itm.get('code') or '').strip().lower()
+                    if itm_code == code_norm:
+                        name = itm.get('name') or itm.get('code') or code.upper()
+                        buy = itm.get('buy') or ''
+                        sell = itm.get('sell') or ''
+                        return {
+                            'name': str(name),
+                            'code': str(itm_code).upper(),
+                            'buy': str(buy),
+                            'sell': str(sell),
+                        }
+        except Exception:
+            pass
+
+        return "Không nhận được dữ liệu hợp lệ từ API tiền tệ."
