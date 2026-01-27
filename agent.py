@@ -121,9 +121,8 @@ class Agent:
                 time.sleep(attempt)
         else:
             # all attempts failed
-            err = resp.get('error') if resp is not None else 'unknown error'
-            return f"Error fetching gold price after {max_retries} attempts: {err}"
-
+            err = "Không lấy được giá vàng Mi Hồng."
+        
         text = resp.get('text', '')
         parsed = resp.get('json')
 
@@ -167,7 +166,7 @@ class Agent:
                 selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
                 dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
                 out.append(f"- {code} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
-            mi_hong_text = "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
+            mi_hong_text = "\n".join(out) if out else err
 
             # Fetch Doji data and include beneath Mi Hồng results
             doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
@@ -217,41 +216,41 @@ class Agent:
             else:
                 doji_text = f"Lỗi khi lấy Doji: {resp2.get('error')}"
 
-            return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}"
+            return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}\n\nTrao niềm tin nhận tài lộc."
 
         # Try XML fallback
-        try:
-            root = ET.fromstring(text)
-            def elem_to_dict(e):
-                if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
-                    return None
-                d = {}
-                for k, v in e.attrib.items():
-                    d[f"@{k}"] = v
-                children = list(e)
-                if children:
-                    for c in children:
-                        val = elem_to_dict(c)
-                        if val is None:
-                            continue
-                        if c.tag in d:
-                            if isinstance(d[c.tag], list):
-                                d[c.tag].append(val)
-                            else:
-                                d[c.tag] = [d[c.tag], val]
-                        else:
-                            d[c.tag] = val
-                text_val = e.text.strip() if e.text and e.text.strip() else None
-                if text_val:
-                    if d:
-                        d['#text'] = text_val
-                    else:
-                        return text_val
-                return d
-            xml_parsed = elem_to_dict(root)
-            return xml_parsed
-        except Exception:
-            pass
+        # try:
+        #     root = ET.fromstring(text)
+        #     def elem_to_dict(e):
+        #         if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
+        #             return None
+        #         d = {}
+        #         for k, v in e.attrib.items():
+        #             d[f"@{k}"] = v
+        #         children = list(e)
+        #         if children:
+        #             for c in children:
+        #                 val = elem_to_dict(c)
+        #                 if val is None:
+        #                     continue
+        #                 if c.tag in d:
+        #                     if isinstance(d[c.tag], list):
+        #                         d[c.tag].append(val)
+        #                     else:
+        #                         d[c.tag] = [d[c.tag], val]
+        #                 else:
+        #                     d[c.tag] = val
+        #         text_val = e.text.strip() if e.text and e.text.strip() else None
+        #         if text_val:
+        #             if d:
+        #                 d['#text'] = text_val
+        #             else:
+        #                 return text_val
+        #         return d
+        #     xml_parsed = elem_to_dict(root)
+        #     return xml_parsed
+        # except Exception:
+        #     pass
 
         # Fallback: return raw text
         return text
