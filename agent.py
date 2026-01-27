@@ -101,30 +101,34 @@ class Agent:
         return self.mcp_agent.run_command(command)
 
     def get_gold_price(self):
-        """Shorter implementation: use APIClient for HTTP and keep concise parsing/formatting."""
+        # Delegate to provider-specific helpers and combine their outputs
+        mi_hong_text = self._fetch_mihong_prices()
+        doji_text = self._fetch_doji_prices()
+        
+        # Add signature line
+        return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}\n\nTrao niềm tin nhận tài lộc."
+
+    def _fetch_mihong_prices(self):
         url = "https://mihong.vn/api/v1/gold/prices/current"
         headers = {
             'x-requested-with': 'XMLHttpRequest',
             'referer': 'https://mihong.vn/vi/gia-vang-trong-nuoc',
             'Cookie': 'laravel_session=BjzTy5xwYchpU94uwsemKJZ4L5dqrLQ01iEgogfx'
         }
-        # Retry logic: attempt up to 5 times with incremental backoff
         max_retries = 5
         resp = None
         for attempt in range(1, max_retries + 1):
             resp = self.api_client.get(url, headers=headers, timeout=10, verify=False)
             if resp.get('ok'):
                 break
-            logging.warning("Gold API request failed (attempt %d/%d): %s", attempt, max_retries, resp.get('error'))
+            logging.warning("Mi Hồng API request failed (attempt %d/%d): %s", attempt, max_retries, resp.get('error'))
             if attempt < max_retries:
-                # simple backoff: sleep 1s, 2s, 3s, ...
                 time.sleep(attempt)
         else:
-            # all attempts failed
-            err = "Không lấy được giá vàng Mi Hồng."
-        
-        text = resp.get('text', '')
+            return "Không lấy được giá vàng Mi Hồng."
+
         parsed = resp.get('json')
+        text = resp.get('text', '')
 
         def fmt_price(val):
             if val is None:
@@ -135,13 +139,10 @@ class Agent:
             except Exception:
                 return str(val)
 
-        # Prefer JSON structured response
         if isinstance(parsed, dict) and 'data' in parsed:
             data = parsed.get('data') or []
-            # normalize to list
             if isinstance(data, dict):
                 items = [v for v in (x for x in data.values()) if isinstance(v, dict) or isinstance(v, list)]
-                # flatten lists
                 flat = []
                 for it in items:
                     if isinstance(it, list):
@@ -166,94 +167,81 @@ class Agent:
                 selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
                 dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
                 out.append(f"- {code} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
-            mi_hong_text = "\n".join(out) if out else err
+            return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
 
-            # Fetch Doji data and include beneath Mi Hồng results
-            doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
-            try:
-                resp2 = self.api_client.get(doji_url, timeout=10, verify=False)
-            except Exception as e:
-                resp2 = {'ok': False, 'error': str(e)}
-
-            if resp2.get('ok'):
-                raw = (resp2.get('text') or '')
-                if raw.strip():
-                    # Parse HTML table rows and extract requested labels/prices
-                    # Targets: "SJC - Bán Lẻ", "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ"
-                    try:
-                        rows = re.findall(r'<tr[^>]*>.*?</tr>', raw, flags=re.S | re.I)
-                        targets = [
-                            "SJC - Bán Lẻ",
-                            "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ",
-                        ]
-                        found = []
-                        for tr in rows:
-                            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, flags=re.S | re.I)
-                            if not tds:
-                                continue
-                            # clean inner HTML from each td
-                            clean = [re.sub(r'<.*?>', '', td).strip() for td in tds]
-                            label = clean[0]
-                            # match exact label or contains
-                            if any(label == t or t in label for t in targets):
-                                # find numeric-like values in following tds
-                                nums = []
-                                for td in clean[1:]:
-                                    m = re.search(r'([0-9][0-9\.,]+)', td)
-                                    if m:
-                                        nums.append(m.group(1))
-                                buy = nums[0] if len(nums) > 0 else 'N/A'
-                                sell = nums[1] if len(nums) > 1 else ('N/A' if len(nums) > 0 else 'N/A')
-                                found.append(f"- {label}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}")
-                        if found:
-                            doji_text = "\n".join(found)
+        # XML fallback
+        try:
+            root = ET.fromstring(text)
+            def elem_to_dict(e):
+                if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
+                    return None
+                d = {}
+                for k, v in e.attrib.items():
+                    d[f"@{k}"] = v
+                children = list(e)
+                if children:
+                    for c in children:
+                        val = elem_to_dict(c)
+                        if val is None:
+                            continue
+                        if c.tag in d:
+                            if isinstance(d[c.tag], list):
+                                d[c.tag].append(val)
+                            else:
+                                d[c.tag] = [d[c.tag], val]
                         else:
-                            doji_text = "Không tìm thấy mục Doji phù hợp."
-                    except Exception as e:
-                        doji_text = f"Lỗi phân tích Doji: {e}"
-                else:
-                    doji_text = "Không có dữ liệu từ Doji."
-            else:
-                doji_text = f"Lỗi khi lấy Doji: {resp2.get('error')}"
+                            d[c.tag] = val
+                text_val = e.text.strip() if e.text and e.text.strip() else None
+                if text_val:
+                    if d:
+                        d['#text'] = text_val
+                    else:
+                        return text_val
+                return d
+            xml_parsed = elem_to_dict(root)
+            return json.dumps(xml_parsed, ensure_ascii=False, indent=2) if isinstance(xml_parsed, (dict, list)) else str(xml_parsed)
+        except Exception:
+            return text
 
-            return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}\n\nTrao niềm tin nhận tài lộc."
+    def _fetch_doji_prices(self):
+        doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
+        try:
+            resp2 = self.api_client.get(doji_url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi lấy Doji: {e}"
 
-        # Try XML fallback
-        # try:
-        #     root = ET.fromstring(text)
-        #     def elem_to_dict(e):
-        #         if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
-        #             return None
-        #         d = {}
-        #         for k, v in e.attrib.items():
-        #             d[f"@{k}"] = v
-        #         children = list(e)
-        #         if children:
-        #             for c in children:
-        #                 val = elem_to_dict(c)
-        #                 if val is None:
-        #                     continue
-        #                 if c.tag in d:
-        #                     if isinstance(d[c.tag], list):
-        #                         d[c.tag].append(val)
-        #                     else:
-        #                         d[c.tag] = [d[c.tag], val]
-        #                 else:
-        #                     d[c.tag] = val
-        #         text_val = e.text.strip() if e.text and e.text.strip() else None
-        #         if text_val:
-        #             if d:
-        #                 d['#text'] = text_val
-        #             else:
-        #                 return text_val
-        #         return d
-        #     xml_parsed = elem_to_dict(root)
-        #     return xml_parsed
-        # except Exception:
-        #     pass
+        if not resp2.get('ok'):
+            return f"Lỗi khi lấy Doji: {resp2.get('error')}"
 
-        # Fallback: return raw text
-        return text
+        raw = (resp2.get('text') or '')
+        if not raw.strip():
+            return "Không có dữ liệu từ Doji."
+
+        try:
+            rows = re.findall(r'<tr[^>]*>.*?</tr>', raw, flags=re.S | re.I)
+            targets = [
+                "SJC - Bán Lẻ",
+                "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ",
+            ]
+            found = []
+            for tr in rows:
+                tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, flags=re.S | re.I)
+                if not tds:
+                    continue
+                clean = [re.sub(r'<.*?>', '', td).strip() for td in tds]
+                label = clean[0]
+                if any(label == t or t in label for t in targets):
+                    nums = []
+                    for td in clean[1:]:
+                        m = re.search(r'([0-9][0-9\.,]+)', td)
+                        if m:
+                            nums.append(m.group(1))
+                    buy = nums[0] if len(nums) > 0 else 'N/A'
+                    sell = nums[1] if len(nums) > 1 else ('N/A' if len(nums) > 0 else 'N/A')
+                    found.append(f"- {label}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}")
+            return "\n".join(found) if found else "Không tìm thấy mục Doji phù hợp."
+        except Exception as e:
+            return f"Lỗi phân tích Doji: {e}"
 
     def get_money_rate(self, code='usd'):
         """Fetch fiat exchange info from external API and return formatted result.
