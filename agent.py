@@ -168,40 +168,7 @@ class Agent:
                 dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
                 out.append(f"- {code} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
             return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
-
-        # XML fallback
-        try:
-            root = ET.fromstring(text)
-            def elem_to_dict(e):
-                if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
-                    return None
-                d = {}
-                for k, v in e.attrib.items():
-                    d[f"@{k}"] = v
-                children = list(e)
-                if children:
-                    for c in children:
-                        val = elem_to_dict(c)
-                        if val is None:
-                            continue
-                        if c.tag in d:
-                            if isinstance(d[c.tag], list):
-                                d[c.tag].append(val)
-                            else:
-                                d[c.tag] = [d[c.tag], val]
-                        else:
-                            d[c.tag] = val
-                text_val = e.text.strip() if e.text and e.text.strip() else None
-                if text_val:
-                    if d:
-                        d['#text'] = text_val
-                    else:
-                        return text_val
-                return d
-            xml_parsed = elem_to_dict(root)
-            return json.dumps(xml_parsed, ensure_ascii=False, indent=2) if isinstance(xml_parsed, (dict, list)) else str(xml_parsed)
-        except Exception:
-            return text
+        return "Không tìm thấy dữ liệu giá vàng phù hợp."
 
     def _fetch_doji_prices(self):
         doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
