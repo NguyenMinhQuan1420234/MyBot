@@ -104,9 +104,15 @@ class Agent:
         # Delegate to provider-specific helpers and combine their outputs
         mi_hong_text = self._fetch_mihong_prices()
         doji_text = self._fetch_doji_prices()
-        
-        # Add signature line
-        return f"Giá vàng Mi Hồng:\n{mi_hong_text}\n\nGiá vàng Doji:\n{doji_text}\n\nTrao niềm tin nhận tài lộc."
+        ngoctham_text = self._fetch_ngoctham_prices()
+
+        parts = []
+        parts.append(f"Giá vàng Mi Hồng:\n{mi_hong_text}")
+        parts.append(f"Giá vàng Doji:\n{doji_text}")
+        parts.append(f"Giá vàng Ngọc Thắm:\n{ngoctham_text}")
+
+        merged = "\n\n".join(parts)
+        return f"{merged}\n\nTrao niềm tin nhận tài lộc."
 
     def _fetch_mihong_prices(self):
         url = "https://mihong.vn/api/v1/gold/prices/current"
@@ -209,6 +215,85 @@ class Agent:
             return "\n".join(found) if found else "Không tìm thấy mục Doji phù hợp."
         except Exception as e:
             return f"Lỗi phân tích Doji: {e}"
+
+    def _fetch_ngoctham_prices(self):
+        """Fetch selected prices from ngoctham endpoint.
+
+        Returns a formatted string containing only the requested `loaivang`
+        entries: "Nhẫn 999.9" and "Vàng Miếng SJC  (Loại 10 chỉ)" with their
+        `giamua` (buy) and `giaban` (sell) values.
+        """
+        url = "https://ngoctham.com/ajax/proxy_banggia.php"
+        try:
+            resp = self.api_client.get(url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi lấy dữ liệu Ngọc Thắm: {e}"
+
+        if not resp.get('ok'):
+            return f"Lỗi khi lấy dữ liệu Ngọc Thắm: {resp.get('error')}"
+
+        parsed = resp.get('json')
+        text = resp.get('text') or ''
+
+        targets = [
+            "nhẫn 999.9",
+            "vàng miếng sjc  (loại 10 chỉ)"
+        ]
+
+        def format_item(item):
+            name = item.get('loaivang') or item.get('ten') or ''
+            buy = item.get('giamua') or item.get('mua') or ''
+            sell = item.get('giaban') or item.get('ban') or ''
+            return f"- {name}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}"
+
+        def find_in_list(items):
+            found = []
+            for itm in items:
+                if not isinstance(itm, dict):
+                    continue
+                name = (str(itm.get('loaivang') or itm.get('ten') or '')).strip().lower()
+                # normalize spaces for matching
+                norm = re.sub(r"\s+", " ", name)
+                for t in targets:
+                    if t in norm:
+                        found.append(format_item(itm))
+                        break
+            return found
+
+        # If parsed JSON available and is iterable
+        if isinstance(parsed, dict):
+            # some APIs wrap list under keys like 'data' or directly return a list
+            candidate = None
+            if 'data' in parsed and isinstance(parsed['data'], list):
+                candidate = parsed['data']
+            else:
+                # try to find first list value in dict
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        candidate = v
+                        break
+            if candidate is not None:
+                found = find_in_list(candidate)
+                if found:
+                    return "\n".join(found)
+
+        # fallback: try parse raw text as JSON list/dict
+        try:
+            j = json.loads(text)
+            if isinstance(j, list):
+                found = find_in_list(j)
+                if found:
+                    return "\n".join(found)
+            if isinstance(j, dict):
+                candidate = j.get('data') if isinstance(j.get('data'), list) else None
+                if candidate:
+                    found = find_in_list(candidate)
+                    if found:
+                        return "\n".join(found)
+        except Exception:
+            pass
+
+        return "Không tìm thấy dữ liệu Ngọc Thắm cho mục yêu cầu."
 
     def get_money_rate(self, code='usd'):
         """Fetch fiat exchange info from external API and return formatted result.
