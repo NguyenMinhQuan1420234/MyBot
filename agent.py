@@ -252,10 +252,9 @@ class Agent:
                 if not isinstance(itm, dict):
                     continue
                 name = (str(itm.get('loaivang') or itm.get('ten') or '')).strip().lower()
-                # normalize spaces for matching
-                norm = re.sub(r"\s+", " ", name)
                 for t in targets:
-                    if t in norm:
+                    print(name, t)
+                    if t in name:
                         found.append(format_item(itm))
                         break
             return found
