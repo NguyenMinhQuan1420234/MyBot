@@ -153,12 +153,27 @@ def main():
         )
     else:
         schedule_times = [(9, 0), (14, 0)]
-        for h, m in schedule_times:
-            if hanoi_tz:
-                t = dt_time(hour=h, minute=m, tzinfo=hanoi_tz)
-            else:
-                t = dt_time(hour=h, minute=m)
-            jobq.run_daily(_scheduled_gold_job, t)
+        # Remove duplicate times while preserving order
+        seen = set()
+        unique_times = []
+        for tm in schedule_times:
+            if tm not in seen:
+                seen.add(tm)
+                unique_times.append(tm)
+
+        # Prevent scheduling the same jobs multiple times in the same process
+        if getattr(app, '_scheduled_gold_jobs_created', False):
+            logging.info("Scheduled gold jobs already created; skipping duplicate scheduling.")
+        else:
+            app._scheduled_gold_jobs_created = True
+            for h, m in unique_times:
+                if hanoi_tz:
+                    t = dt_time(hour=h, minute=m, tzinfo=hanoi_tz)
+                else:
+                    t = dt_time(hour=h, minute=m)
+                job = jobq.run_daily(_scheduled_gold_job, t)
+                logging.info("Scheduled gold job at %02d:%02d", h, m)
+                logging.debug("Scheduled job object: %r", job)
     app.run_polling()
 
 if __name__ == '__main__':
