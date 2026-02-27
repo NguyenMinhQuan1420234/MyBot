@@ -124,7 +124,7 @@ def main():
         try:
             scheduled = schedule_times
         except NameError:
-            scheduled = [(9, 0), (12, 0), (15, 0), (18, 0)]
+            scheduled = [(9, 0)]
 
         if current_hm not in scheduled:
             logging.info("Skipping scheduled gold job; GMT+7 time %02d:%02d not in schedule", now.hour, now.minute)
@@ -152,7 +152,7 @@ def main():
             "To enable scheduling install: pip install \"python-telegram-bot[job-queue]\""
         )
     else:
-        schedule_times = [(9, 0), (14, 0)]
+        schedule_times = [(9, 0)]
         # Remove duplicate times while preserving order
         seen = set()
         unique_times = []
