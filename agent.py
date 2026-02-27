@@ -115,12 +115,8 @@ class Agent:
         return f"{merged}\n\nTrao niềm tin nhận tài lộc."
 
     def _fetch_mihong_prices(self):
-        url = "https://mihong.vn/api/v1/gold/prices/current"
-        headers = {
-            'x-requested-with': 'XMLHttpRequest',
-            'referer': 'https://mihong.vn/vi/gia-vang-trong-nuoc',
-            'Cookie': 'laravel_session=BjzTy5xwYchpU94uwsemKJZ4L5dqrLQ01iEgogfx'
-        }
+        url = "https://api.mihong.vn/v1/gold-prices?market=domestic"
+        headers = {}
         max_retries = 5
         resp = None
         for attempt in range(1, max_retries + 1):
@@ -137,44 +133,72 @@ class Agent:
         text = resp.get('text', '')
 
         def fmt_price(val):
-            if val is None:
+            if val is None or val == '':
                 return 'N/A'
             try:
-                num = float(str(val).replace(',', '').strip())
+                # remove common thousand separators
+                num = float(str(val).replace(',', '').replace('.', '') if isinstance(val, str) and ',' in str(val) and '.' in str(val) else str(val).replace(',', ''))
                 return f"{int(round(num)):,}"
             except Exception:
                 return str(val)
 
-        if isinstance(parsed, dict) and 'data' in parsed:
-            data = parsed.get('data') or []
-            if isinstance(data, dict):
-                items = [v for v in (x for x in data.values()) if isinstance(v, dict) or isinstance(v, list)]
-                flat = []
-                for it in items:
-                    if isinstance(it, list):
-                        flat.extend([x for x in it if isinstance(x, dict)])
-                    elif isinstance(it, dict):
-                        flat.append(it)
-                if not flat:
-                    flat = [data]
-                items = flat
+        # Normalize parsed JSON: try resp.json first, then fallback to text
+        data_list = None
+        if isinstance(parsed, dict):
+            # common pattern: { 'data': [...] }
+            if 'data' in parsed and isinstance(parsed['data'], list):
+                data_list = parsed['data']
             else:
-                items = data
+                # try to find the first list value in dict
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        data_list = v
+                        break
+        elif isinstance(parsed, list):
+            data_list = parsed
+        else:
+            # try parse text body
+            try:
+                j = json.loads(text)
+                if isinstance(j, dict) and 'data' in j and isinstance(j['data'], list):
+                    data_list = j['data']
+                elif isinstance(j, list):
+                    data_list = j
+            except Exception:
+                pass
 
-            allowed = {"SJC", "999"}
-            out = []
-            for item in items:
-                if not isinstance(item, dict):
+        if not data_list:
+            return "Không tìm thấy dữ liệu giá vàng phù hợp."
+
+        wanted = {"SJC", "999"}
+        found = []
+        for item in data_list:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get('code') or item.get('Code') or item.get('symbol') or '').strip()
+            if not code:
+                # sometimes code may be inside nested dict
+                # try common keys
+                for k in ['ma', 'type']:
+                    if k in item:
+                        code = str(item.get(k) or '').strip()
+                        break
+            if not code:
+                continue
+            # Normalize code to comparison form
+            code_norm = code.upper()
+            if code_norm not in wanted:
+                # also accept numeric '999' possibly with decimals
+                if code_norm.replace('.', '').isdigit() and '999' not in code_norm:
                     continue
-                code = (item.get('code') or item.get('Code') or '').strip()
-                if code not in allowed:
+                if '999' not in code_norm and 'SJC' not in code_norm:
                     continue
-                buying = item.get('buyingPrice') or item.get('Buy') or item.get('buy')
-                selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
-                dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
-                out.append(f"- {code} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
-            return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
-        return "Không tìm thấy dữ liệu giá vàng phù hợp."
+            buying = item.get('buyingPrice') or item.get('buying_price') or item.get('Buy') or item.get('buy') or item.get('gia_mua') or item.get('mua')
+            selling = item.get('sellingPrice') or item.get('selling_price') or item.get('Sell') or item.get('sell') or item.get('gia_ban') or item.get('ban')
+            dt = item.get('dateTime') or item.get('date_time') or item.get('date') or item.get('updated_at') or ''
+            found.append(f"- {code_norm} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
+
+        return "\n".join(found) if found else "Không tìm thấy dữ liệu giá vàng phù hợp."
 
     def _fetch_doji_prices(self):
         doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
