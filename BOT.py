@@ -174,6 +174,19 @@ def main():
                 job = jobq.run_daily(_scheduled_gold_job, t)
                 logging.info("Scheduled gold job at %02d:%02d", h, m)
                 logging.debug("Scheduled job object: %r", job)
+            # Register background gold watcher to detect price changes and alert group
+            try:
+                import message as _message
+                from watcher import GoldWatcher, DEFAULT_MONGO_URI
+                mongo_uri = os.getenv('MONGO_URI', DEFAULT_MONGO_URI)
+                # use same default group as scheduled job
+                default_chat = -1002713059877
+                watcher = GoldWatcher(_message.agent, mongo_uri, chat_id=default_chat)
+                # run every 900 seconds (15 minutes)
+                jobq.run_repeating(watcher.job, interval=900, first=30)
+                logging.info('Registered GoldWatcher background job (every 900s)')
+            except Exception:
+                logging.exception('Failed to register GoldWatcher')
     app.run_polling()
 
 if __name__ == '__main__':
