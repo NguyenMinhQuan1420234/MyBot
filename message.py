@@ -97,9 +97,7 @@ async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
         return
     result = agent.get_gold_price()
-    if isinstance(result, dict) and result.get("message"):
-        text = str(result.get("message"))
-    elif isinstance(result, (dict, list)):
+    if isinstance(result, (dict, list)):
         text = json.dumps(result, ensure_ascii=False, indent=2)
     else:
         text = str(result)

@@ -2,10 +2,8 @@ import logging
 import json
 import xml.etree.ElementTree as ET
 import re
-from typing import Any, Dict, List, Optional, Protocol
 from mcp_playwright_agent import MCPPlaywrightAgent
 from api_client import APIClient
-from crawl_gold_price import GoldPriceService
 
 # Prefer requests if available, fall back to urllib
 try:
@@ -38,7 +36,6 @@ except ImportError:
     openai = None
 # Azure OpenAI can use openai with endpoint config
 
-
 class Agent:
     def __init__(self, provider, api_key, **kwargs):
         self.provider = provider.lower()
@@ -47,9 +44,6 @@ class Agent:
         self.mcp_agent = MCPPlaywrightAgent()
         # initialize a reusable API client (disable SSL verification for legacy endpoints)
         self.api_client = APIClient(verify=False)
-        # initialize gold price service with optional MongoDB URI for change computation
-        mongo_uri = kwargs.get('mongo_uri')
-        self.gold_service = GoldPriceService(self.api_client, mongo_uri=mongo_uri)
 
         if self.provider == "gemini" and genai:
             genai.configure(api_key=api_key)
@@ -107,7 +101,222 @@ class Agent:
         return self.mcp_agent.run_command(command)
 
     def get_gold_price(self):
-        return self.gold_service.get_snapshot()
+        # Delegate to provider-specific helpers and combine their outputs
+        mi_hong_text = self._fetch_mihong_prices()
+        doji_text = self._fetch_doji_prices()
+        ngoctham_text = self._fetch_ngoctham_prices()
+
+        parts = []
+        parts.append(f"Giá vàng Mi Hồng:\n{mi_hong_text}")
+        parts.append(f"Giá vàng Doji:\n{doji_text}")
+        parts.append(f"Giá vàng Ngọc Thắm:\n{ngoctham_text}")
+
+        merged = "\n\n".join(parts)
+        return f"{merged}\n\nTrao niềm tin nhận tài lộc."
+
+    def _fetch_mihong_prices(self):
+        url = "https://api.mihong.vn/v1/gold-prices?market=domestic"
+        headers = {}
+        max_retries = 5
+        resp = None
+        for attempt in range(1, max_retries + 1):
+            resp = self.api_client.get(url, headers=headers, timeout=10, verify=False)
+            if resp.get('ok'):
+                break
+            logging.warning("Mi Hồng API request failed (attempt %d/%d): %s", attempt, max_retries, resp.get('error'))
+            if attempt < max_retries:
+                time.sleep(attempt)
+        else:
+            return "Không lấy được giá vàng Mi Hồng."
+
+        parsed = resp.get('json')
+        text = resp.get('text', '')
+
+        def fmt_price(val):
+            if val is None or val == '':
+                return 'N/A'
+            try:
+                # remove common thousand separators
+                num = float(str(val).replace(',', '').replace('.', '') if isinstance(val, str) and ',' in str(val) and '.' in str(val) else str(val).replace(',', ''))
+                return f"{int(round(num)):,}"
+            except Exception:
+                return str(val)
+
+        # Normalize parsed JSON: try resp.json first, then fallback to text
+        data_list = None
+        if isinstance(parsed, dict):
+            # common pattern: { 'data': [...] }
+            if 'data' in parsed and isinstance(parsed['data'], list):
+                data_list = parsed['data']
+            else:
+                # try to find the first list value in dict
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        data_list = v
+                        break
+        elif isinstance(parsed, list):
+            data_list = parsed
+        else:
+            # try parse text body
+            try:
+                j = json.loads(text)
+                if isinstance(j, dict) and 'data' in j and isinstance(j['data'], list):
+                    data_list = j['data']
+                elif isinstance(j, list):
+                    data_list = j
+            except Exception:
+                pass
+
+        if not data_list:
+            return "Không tìm thấy dữ liệu giá vàng phù hợp."
+
+        wanted = {"SJC", "999"}
+        found = []
+        for item in data_list:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get('code') or item.get('Code') or item.get('symbol') or '').strip()
+            if not code:
+                # sometimes code may be inside nested dict
+                # try common keys
+                for k in ['ma', 'type']:
+                    if k in item:
+                        code = str(item.get(k) or '').strip()
+                        break
+            if not code:
+                continue
+            # Normalize code to comparison form
+            code_norm = code.upper()
+            if code_norm not in wanted:
+                # also accept numeric '999' possibly with decimals
+                if code_norm.replace('.', '').isdigit() and '999' not in code_norm:
+                    continue
+                if '999' not in code_norm and 'SJC' not in code_norm:
+                    continue
+            buying = item.get('buyingPrice') or item.get('buying_price') or item.get('Buy') or item.get('buy') or item.get('gia_mua') or item.get('mua')
+            selling = item.get('sellingPrice') or item.get('selling_price') or item.get('Sell') or item.get('sell') or item.get('gia_ban') or item.get('ban')
+            dt = item.get('dateTime') or item.get('date_time') or item.get('date') or item.get('updated_at') or ''
+            found.append(f"- {code_norm} (ngày {dt}):\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}")
+
+        return "\n".join(found) if found else "Không tìm thấy dữ liệu giá vàng phù hợp."
+
+    def _fetch_doji_prices(self):
+        doji_url = "https://giavang.doji.vn/sites/default/files/data/hienthi/vungmien_109.dat"
+        try:
+            resp2 = self.api_client.get(doji_url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi lấy Doji: {e}"
+
+        if not resp2.get('ok'):
+            return f"Lỗi khi lấy Doji: {resp2.get('error')}"
+
+        raw = (resp2.get('text') or '')
+        if not raw.strip():
+            return "Không có dữ liệu từ Doji."
+
+        try:
+            rows = re.findall(r'<tr[^>]*>.*?</tr>', raw, flags=re.S | re.I)
+            targets = [
+                "SJC - Bán Lẻ",
+                "Nhẫn Tròn 9999 Hưng Thịnh Vượng - Bán Lẻ",
+            ]
+            found = []
+            for tr in rows:
+                tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, flags=re.S | re.I)
+                if not tds:
+                    continue
+                clean = [re.sub(r'<.*?>', '', td).strip() for td in tds]
+                label = clean[0]
+                if any(label == t or t in label for t in targets):
+                    nums = []
+                    for td in clean[1:]:
+                        m = re.search(r'([0-9][0-9\.,]+)', td)
+                        if m:
+                            nums.append(m.group(1))
+                    buy = nums[0] if len(nums) > 0 else 'N/A'
+                    sell = nums[1] if len(nums) > 1 else ('N/A' if len(nums) > 0 else 'N/A')
+                    found.append(f"- {label}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}")
+            return "\n".join(found) if found else "Không tìm thấy mục Doji phù hợp."
+        except Exception as e:
+            return f"Lỗi phân tích Doji: {e}"
+
+    def _fetch_ngoctham_prices(self):
+        """Fetch selected prices from ngoctham endpoint.
+
+        Returns a formatted string containing only the requested `loaivang`
+        entries: "Nhẫn 999.9" and "Vàng Miếng SJC  (Loại 10 chỉ)" with their
+        `giamua` (buy) and `giaban` (sell) values.
+        """
+        url = "https://ngoctham.com/ajax/proxy_banggia.php"
+        try:
+            resp = self.api_client.get(url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi lấy dữ liệu Ngọc Thắm: {e}"
+
+        if not resp.get('ok'):
+            return f"Lỗi khi lấy dữ liệu Ngọc Thắm: {resp.get('error')}"
+
+        parsed = resp.get('json')
+        text = resp.get('text') or ''
+
+        targets = [
+            "nhẫn 999.9",
+            "vàng miếng sjc  (loại 10 chỉ)"
+        ]
+
+        def format_item(item):
+            name = item.get('loaivang') or item.get('ten') or ''
+            buy = item.get('giamua') or item.get('mua') or ''
+            sell = item.get('giaban') or item.get('ban') or ''
+            return f"- {name}:\n  - Giá mua: {buy}\n  - Giá bán: {sell}"
+
+        def find_in_list(items):
+            found = []
+            for itm in items:
+                if not isinstance(itm, dict):
+                    continue
+                name = (str(itm.get('loaivang') or itm.get('ten') or '')).strip().lower()
+                for t in targets:
+                    print(name, t)
+                    if t in name:
+                        found.append(format_item(itm))
+                        break
+            return found
+
+        # If parsed JSON available and is iterable
+        if isinstance(parsed, dict):
+            # some APIs wrap list under keys like 'data' or directly return a list
+            candidate = None
+            if 'data' in parsed and isinstance(parsed['data'], list):
+                candidate = parsed['data']
+            else:
+                # try to find first list value in dict
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        candidate = v
+                        break
+            if candidate is not None:
+                found = find_in_list(candidate)
+                if found:
+                    return "\n".join(found)
+
+        # fallback: try parse raw text as JSON list/dict
+        try:
+            j = json.loads(text)
+            if isinstance(j, list):
+                found = find_in_list(j)
+                if found:
+                    return "\n".join(found)
+            if isinstance(j, dict):
+                candidate = j.get('data') if isinstance(j.get('data'), list) else None
+                if candidate:
+                    found = find_in_list(candidate)
+                    if found:
+                        return "\n".join(found)
+        except Exception:
+            pass
+
+        return "Không tìm thấy dữ liệu Ngọc Thắm cho mục yêu cầu."
 
     def get_money_rate(self, code='usd'):
         """Fetch fiat exchange info from external API and return formatted result.

@@ -112,49 +112,27 @@ class GoldWatcher:
         return res
 
     def _collect_sources(self) -> List[Dict[str, Any]]:
-        """Call agent.get_gold_price() and extract normalized source dicts."""
+        """Call agent fetchers and return list of source dicts with parsed values."""
         sources = []
         try:
-            snapshot = self.agent.get_gold_price()
+            mihong_text = self.agent._fetch_mihong_prices()
         except Exception as e:
-            logging.exception('Error calling agent.get_gold_price(): %s', e)
-            return sources
+            logging.exception('Error fetching Mi Hong prices: %s', e)
+            mihong_text = f'Error: {e}'
+        try:
+            doji_text = self.agent._fetch_doji_prices()
+        except Exception as e:
+            logging.exception('Error fetching Doji prices: %s', e)
+            doji_text = f'Error: {e}'
+        try:
+            ngoctham_text = self.agent._fetch_ngoctham_prices()
+        except Exception as e:
+            logging.exception('Error fetching Ngọc Thắm prices: %s', e)
+            ngoctham_text = f'Error: {e}'
 
-        # Iterate through sources in snapshot and convert to internal format
-        for src_data in snapshot.get('sources', []):
-            src_name = src_data.get('name', 'unknown')
-            # Map source names to internal source codes
-            source_map = {'Mi Hong': 'mihong', 'Doji': 'doji', 'Ngoc Tham': 'ngoctham'}
-            source_code = source_map.get(src_name, src_name.lower())
-
-            # Use normalized items from snapshot
-            items_list = src_data.get('items', [])
-
-            # Convert normalized items to parsed dict format
-            parsed = {}
-            if src_data.get('status') == 'ok':
-                for item in items_list:
-                    code = item.get('code')
-                    if not code:
-                        continue
-                    buy_price = item.get('buyPrice')
-                    sell_price = item.get('sellPrice')
-                    has_change = item.get('has_price_change', True)  # Default to True if not set
-                    parsed[code] = {
-                        'buy_raw': buy_price,
-                        'sell_raw': sell_price,
-                        'buy': buy_price,
-                        'sell': sell_price,
-                        'text': code,
-                        'has_price_change': has_change,
-                    }
-
-            sources.append({
-                'source': source_code,
-                'text': snapshot.get('message', ''),
-                'parsed': parsed,
-                'status': src_data.get('status'),
-            })
+        sources.append({'source': 'mihong', 'text': mihong_text, 'parsed': self._parse_bullet_text(mihong_text)})
+        sources.append({'source': 'doji', 'text': doji_text, 'parsed': self._parse_bullet_text(doji_text)})
+        sources.append({'source': 'ngoctham', 'text': ngoctham_text, 'parsed': self._parse_bullet_text(ngoctham_text)})
         return sources
 
     def check_and_store(self) -> List[Dict[str, Any]]:
@@ -219,31 +197,60 @@ class GoldWatcher:
             for code, vals in parsed.items():
                 buy = vals.get('buy')
                 sell = vals.get('sell')
-                has_change = vals.get('has_price_change', True)  # Skip if explicitly False
-                
-                # Skip storing if no price change detected
-                if not has_change:
-                    logging.debug('Skipping insert for %s/%s: no price change', src, code)
-                    continue
-                
-                # Price changed or is new, so insert
-                doc = {
-                    'timestamp': now,
-                    'source': src,
-                    'code': code,
-                    'buy': buy,
-                    'sell': sell,
-                    'raw_text': text,
-                    'parsed': vals,
-                }
+                # find last entry
                 try:
-                    self.coll.insert_one(doc)
-                    if buy is not None or sell is not None:
-                        changes.append(doc)
-                        logging.info('Stored price change for %s/%s: buy=%s sell=%s', 
-                                    src, code, buy, sell)
+                    last = self.coll.find_one({'source': src, 'code': code}, sort=[('timestamp', -1)])
                 except Exception:
-                    logging.exception('DB insert error')
+                    logging.exception('DB read error')
+                    last = None
+
+                # If no previous record: insert current if we have any numeric value, but DO NOT alert
+                if last is None:
+                    if buy is None and sell is None:
+                        # nothing useful to store
+                        continue
+                    doc = {
+                        'timestamp': now,
+                        'source': src,
+                        'code': code,
+                        'buy': buy,
+                        'sell': sell,
+                        'raw_text': text,
+                        'parsed': vals,
+                    }
+                    try:
+                        self.coll.insert_one(doc)
+                    except Exception:
+                        logging.exception('DB insert error')
+                    # do not mark as a change to notify
+                    continue
+
+                # compare with last and only alert when actual numeric change
+                last_buy = last.get('buy')
+                last_sell = last.get('sell')
+                is_different = False
+                if buy is not None and last_buy is None:
+                    is_different = True
+                elif sell is not None and last_sell is None:
+                    is_different = True
+                elif buy != last_buy or sell != last_sell:
+                    is_different = True
+
+                if is_different:
+                    doc = {
+                        'timestamp': now,
+                        'source': src,
+                        'code': code,
+                        'buy': buy,
+                        'sell': sell,
+                        'raw_text': text,
+                        'parsed': vals,
+                    }
+                    try:
+                        self.coll.insert_one(doc)
+                        changes.append(doc)
+                    except Exception:
+                        logging.exception('DB insert error')
         return changes
 
     async def job(self, context):
