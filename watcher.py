@@ -19,7 +19,7 @@ class GoldWatcher:
       job_queue.run_repeating(watcher.job, interval=900, first=10)
     """
 
-    def __init__(self, agent, mongo_uri: str, db_name: str = 'bot', collection: str = 'gold-price-collection', chat_id: Optional[int] = None):
+    def __init__(self, agent, mongo_uri: str, db_name: str = 'Telegram_bot_database', collection: str = 'gold-price-collection', chat_id: Optional[int] = None):
         if MongoClient is None:
             raise RuntimeError('pymongo is required for GoldWatcher (install pymongo)')
         self.agent = agent
@@ -112,49 +112,85 @@ class GoldWatcher:
         return res
 
     def _collect_sources(self) -> List[Dict[str, Any]]:
-        """Call agent.get_gold_price() and extract normalized source dicts."""
+        """Call agent fetchers and return list of source dicts with parsed values.
+
+        This function is resilient to two Agent behaviours:
+        - Older Agent exposes individual helpers: `_fetch_mihong_prices()`, `_fetch_doji_prices()`, `_fetch_ngoctham_prices()` returning bullet text.
+        - Hypothetical Agent may return a structured snapshot from `get_gold_price()`.
+
+        We prefer calling individual fetchers and parsing their text; if those are not available
+        we attempt to interpret a structured snapshot returned by `get_gold_price()`.
+        """
         sources = []
+        # Prefer calling individual fetchers if present
         try:
-            snapshot = self.agent.get_gold_price()
-        except Exception as e:
-            logging.exception('Error calling agent.get_gold_price(): %s', e)
-            return sources
+            mihong_fn = getattr(self.agent, '_fetch_mihong_prices', None)
+            doji_fn = getattr(self.agent, '_fetch_doji_prices', None)
+            ngoctham_fn = getattr(self.agent, '_fetch_ngoctham_prices', None)
+            if callable(mihong_fn) and callable(doji_fn) and callable(ngoctham_fn):
+                try:
+                    mihong_text = mihong_fn()
+                except Exception as e:
+                    logging.exception('Error fetching Mi Hong prices: %s', e)
+                    mihong_text = f'Error: {e}'
+                try:
+                    doji_text = doji_fn()
+                except Exception as e:
+                    logging.exception('Error fetching Doji prices: %s', e)
+                    doji_text = f'Error: {e}'
+                try:
+                    ngoctham_text = ngoctham_fn()
+                except Exception as e:
+                    logging.exception('Error fetching Ngọc Thắm prices: %s', e)
+                    ngoctham_text = f'Error: {e}'
 
-        # Iterate through sources in snapshot and convert to internal format
-        for src_data in snapshot.get('sources', []):
-            src_name = src_data.get('name', 'unknown')
-            # Map source names to internal source codes
-            source_map = {'Mi Hong': 'mihong', 'Doji': 'doji', 'Ngoc Tham': 'ngoctham'}
-            source_code = source_map.get(src_name, src_name.lower())
+                sources.append({'source': 'mihong', 'text': mihong_text, 'parsed': self._parse_bullet_text(mihong_text)})
+                sources.append({'source': 'doji', 'text': doji_text, 'parsed': self._parse_bullet_text(doji_text)})
+                sources.append({'source': 'ngoctham', 'text': ngoctham_text, 'parsed': self._parse_bullet_text(ngoctham_text)})
+                return sources
+        except Exception:
+            logging.exception('Error while attempting individual fetchers')
 
-            # Use normalized items from snapshot
-            items_list = src_data.get('items', [])
+        # Fallback: try to use structured snapshot from get_gold_price()
+        try:
+            snapshot = None
+            try:
+                snapshot = self.agent.get_gold_price()
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                for src_data in snapshot.get('sources', []):
+                    src_name = src_data.get('name', 'unknown')
+                    source_map = {'Mi Hong': 'mihong', 'Doji': 'doji', 'Ngoc Tham': 'ngoctham'}
+                    source_code = source_map.get(src_name, src_name.lower())
+                    items_list = src_data.get('items', [])
+                    parsed = {}
+                    if src_data.get('status') == 'ok':
+                        for item in items_list:
+                            code = item.get('code')
+                            if not code:
+                                continue
+                            buy_price = item.get('buyPrice') or item.get('buy')
+                            sell_price = item.get('sellPrice') or item.get('sell')
+                            parsed[code] = {
+                                'buy_raw': buy_price,
+                                'sell_raw': sell_price,
+                                'buy': self._to_int(buy_price) if buy_price is not None else None,
+                                'sell': self._to_int(sell_price) if sell_price is not None else None,
+                                'text': code,
+                                'has_price_change': item.get('has_price_change', True),
+                            }
+                    sources.append({
+                        'source': source_code,
+                        'text': snapshot.get('message', '') if isinstance(snapshot, dict) else '',
+                        'parsed': parsed,
+                        'status': src_data.get('status'),
+                    })
+                return sources
+        except Exception:
+            logging.exception('Error parsing structured snapshot from agent.get_gold_price()')
 
-            # Convert normalized items to parsed dict format
-            parsed = {}
-            if src_data.get('status') == 'ok':
-                for item in items_list:
-                    code = item.get('code')
-                    if not code:
-                        continue
-                    buy_price = item.get('buyPrice')
-                    sell_price = item.get('sellPrice')
-                    has_change = item.get('has_price_change', True)  # Default to True if not set
-                    parsed[code] = {
-                        'buy_raw': buy_price,
-                        'sell_raw': sell_price,
-                        'buy': buy_price,
-                        'sell': sell_price,
-                        'text': code,
-                        'has_price_change': has_change,
-                    }
-
-            sources.append({
-                'source': source_code,
-                'text': snapshot.get('message', ''),
-                'parsed': parsed,
-                'status': src_data.get('status'),
-            })
+        # If everything fails return empty list
         return sources
 
     def check_and_store(self) -> List[Dict[str, Any]]:

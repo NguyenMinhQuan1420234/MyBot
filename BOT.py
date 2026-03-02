@@ -183,8 +183,8 @@ def main():
                 default_chat = -1002713059877
                 watcher = GoldWatcher(_message.agent, mongo_uri, chat_id=default_chat)
                 # run every 900 seconds (15 minutes)
-                jobq.run_repeating(watcher.job, interval=900, first=30)
-                logging.info('Registered GoldWatcher background job (every 900s)')
+                jobq.run_repeating(watcher.job, interval=3600, first=30)
+                logging.info('Registered GoldWatcher background job (every 1 hour)')
             except Exception:
                 logging.exception('Failed to register GoldWatcher')
     app.run_polling()
