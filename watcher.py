@@ -282,6 +282,88 @@ class GoldWatcher:
                     logging.exception('DB insert error')
         return changes
 
+    def compare_with_db(self) -> Dict[str, Any]:
+        """Fetch latest prices from `gold-price-collection` and compare with current fetch.
+
+        Returns a dict with keys:
+          - db: mapping (source -> code -> {'buy','sell','timestamp'})
+          - current: mapping (source -> code -> {'buy','sell'})
+          - diffs: list of entries where values differ
+        """
+        result: Dict[str, Any] = {'db': {}, 'current': {}, 'diffs': []}
+        # load latest per (source,code)
+        try:
+            pipeline = [
+                {'$sort': {'timestamp': -1}},
+                {'$group': {'_id': {'source': '$source', 'code': '$code'}, 'doc': {'$first': '$$ROOT'}}}
+            ]
+            agg = list(self.coll.aggregate(pipeline))
+        except Exception:
+            logging.exception('DB aggregation failed in compare_with_db')
+            agg = []
+
+        for entry in agg:
+            key = entry.get('_id') or {}
+            src = key.get('source')
+            code = key.get('code')
+            doc = entry.get('doc') or {}
+            if src is None:
+                continue
+            result['db'].setdefault(src, {})
+            result['db'][src][code] = {
+                'buy': doc.get('buy'),
+                'sell': doc.get('sell'),
+                'timestamp': doc.get('timestamp')
+            }
+
+        # get current snapshot using existing fetch logic
+        sources = self._collect_sources()
+        for s in sources:
+            src = s.get('source')
+            parsed: Dict[str, Dict[str, Any]] = s.get('parsed') or {}
+            result['current'].setdefault(src, {})
+            for code, vals in parsed.items():
+                cur_buy = vals.get('buy')
+                cur_sell = vals.get('sell')
+                # normalize to int where possible
+                cur_buy_n = self._to_int(cur_buy) if cur_buy is not None else None
+                cur_sell_n = self._to_int(cur_sell) if cur_sell is not None else None
+                result['current'][src][code] = {'buy': cur_buy_n, 'sell': cur_sell_n}
+
+        # compute diffs
+        for src, codes in result['current'].items():
+            for code, curvals in codes.items():
+                dbvals = result['db'].get(src, {}).get(code)
+                db_buy = dbvals.get('buy') if dbvals else None
+                db_sell = dbvals.get('sell') if dbvals else None
+                cur_buy = curvals.get('buy')
+                cur_sell = curvals.get('sell')
+                if db_buy != cur_buy or db_sell != cur_sell:
+                    result['diffs'].append({
+                        'source': src,
+                        'code': code,
+                        'db_buy': db_buy,
+                        'db_sell': db_sell,
+                        'cur_buy': cur_buy,
+                        'cur_sell': cur_sell,
+                    })
+
+        # also report any db entries missing from current snapshot
+        for src, codes in result['db'].items():
+            for code, dbvals in codes.items():
+                if src not in result['current'] or code not in result['current'][src]:
+                    result['diffs'].append({
+                        'source': src,
+                        'code': code,
+                        'db_buy': dbvals.get('buy'),
+                        'db_sell': dbvals.get('sell'),
+                        'cur_buy': None,
+                        'cur_sell': None,
+                        'note': 'missing_in_current'
+                    })
+
+        return result
+
     async def job(self, context):
         """Async job wrapper suitable for python-telegram-bot job_queue.
 
