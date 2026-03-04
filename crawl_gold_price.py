@@ -752,3 +752,338 @@ class GoldPriceService:
             "raw": raw_payload,
             "items": items,
         }
+
+    # ==================== Public API Methods ====================
+
+    @staticmethod
+    def _format_vn_price(val: Optional[int]) -> str:
+        """Format price in Vietnamese currency format (dot separator)."""
+        if val is None:
+            return "Không có"
+        try:
+            return f"{int(val):,}".replace(',', '.')
+        except Exception:
+            return str(val)
+
+    @staticmethod
+    def _format_change_arrow(change: Optional[int]) -> str:
+        """Format change value with arrow direction."""
+        if change is None or change == 0:
+            return ""
+        arrow = "↑" if change > 0 else "↓"
+        change_str = f"{change:+,}".replace(',', '.')
+        return f" ({change_str} {arrow})"
+
+    @staticmethod
+    def _display_provider_name(name: str) -> str:
+        """Normalize provider display names in Vietnamese."""
+        if not name:
+            return "Không rõ"
+        name_map = {
+            "Ngoc Tham": "Ngọc Thẩm",
+        }
+        return name_map.get(name, name)
+
+    def _compute_change_vs_yesterday(self, source: str, code: str, buy_price: Optional[int], sell_price: Optional[int]):
+        """Return (buy_change, sell_change) vs latest record of yesterday for source/code."""
+        if self.mongo_coll is None:
+            return None, None
+
+        try:
+            import datetime as dt_module
+            today_start = dt_module.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_start = today_start - dt_module.timedelta(days=1)
+
+            last_yesterday = self.mongo_coll.find_one(
+                {
+                    "source": self._source_key(source),
+                    "code": code,
+                    "timestamp": {"$gte": yesterday_start, "$lt": today_start},
+                },
+                sort=[("timestamp", -1)],
+            )
+
+            if not last_yesterday:
+                return None, None
+
+            y_buy = last_yesterday.get("buy")
+            y_sell = last_yesterday.get("sell")
+
+            buy_change = None if buy_price is None or y_buy is None else (buy_price - y_buy)
+            sell_change = None if sell_price is None or y_sell is None else (sell_price - y_sell)
+            return buy_change, sell_change
+        except Exception:
+            logging.exception("Không tính được thay đổi so với hôm qua cho %s/%s", source, code)
+            return None, None
+
+    def get_info(self) -> Dict[str, Any]:
+        """Get full gold price information with yesterday comparison fallback.
+        
+        Returns:
+            Dict with:
+                - message: Formatted Vietnamese message string
+                - data: Full snapshot dict with all provider data
+                - has_any_change: Boolean indicating if any provider has changes
+        """
+        import datetime as dt_module
+        
+        snapshot = self.get_snapshot()
+        now = dt_module.datetime.now()
+        
+        vn_days = {
+            0: 'THỨ HAI', 1: 'THỨ BA', 2: 'THỨ TƯ',
+            3: 'THỨ NĂM', 4: 'THỨ SÁU', 5: 'THỨ BẢY', 6: 'CHỦ NHẬT'
+        }
+        day_name = vn_days.get(now.weekday(), 'CHỦ NHẬT')
+        date_header = f"{day_name} NGÀY {now.day:02d} THÁNG {now.month:02d} NĂM {now.year}"
+        time_header = now.strftime("%I:%M:%S %p")
+
+        lines = [
+            "THÔNG TIN GIÁ VÀNG",
+            date_header,
+            time_header,
+            "=" * 80,
+        ]
+
+        has_data = False
+        overall_has_change = False
+
+        for src in snapshot.get('sources', []):
+            provider_name = self._display_provider_name(src.get('name', 'Unknown'))
+            source_name = src.get('name', 'Unknown')
+            status = src.get('status')
+            has_any_change = src.get('has_any_change', False)
+
+            if status != 'ok':
+                continue
+
+            if has_any_change:
+                overall_has_change = True
+
+            change_marker = " [CÓ THAY ĐỔI]" if has_any_change else ""
+            lines.append(f"Giá vàng {provider_name}{change_marker}:")
+
+            items = src.get('items', [])
+            items_by_code = {item.get('code'): item for item in items}
+
+            for code in ['SJC', '999']:
+                item = items_by_code.get(code)
+                if not item:
+                    continue
+
+                has_data = True
+                buy = item.get('buyPrice')
+                sell = item.get('sellPrice')
+                buy_change = item.get('buyChange')
+                sell_change = item.get('sellChange')
+                has_change = item.get('has_price_change', False)
+                buy_ref_note = ""
+                sell_ref_note = ""
+
+                # Info-only: if no intraday changes, compare with yesterday
+                if not has_any_change and not has_change:
+                    y_buy_change, y_sell_change = self._compute_change_vs_yesterday(source_name, code, buy, sell)
+                    if y_buy_change not in (None, 0):
+                        buy_change = y_buy_change
+                        buy_ref_note = " [so với hôm qua]"
+                    if y_sell_change not in (None, 0):
+                        sell_change = y_sell_change
+                        sell_ref_note = " [so với hôm qua]"
+
+                code_marker = " ●" if has_change else ""
+                lines.append(f"- {code}{code_marker}:")
+                lines.append(f"  MUA VÀO: {self._format_vn_price(buy)} VNĐ{self._format_change_arrow(buy_change)}{buy_ref_note}")
+                lines.append(f"  BÁN RA : {self._format_vn_price(sell)} VNĐ{self._format_change_arrow(sell_change)}{sell_ref_note}")
+                lines.append("")
+
+        if not has_data:
+            lines.append("Không có dữ liệu giá vàng.")
+
+        lines.append("=" * 80)
+        message = "\n".join(lines)
+
+        return {
+            'message': message,
+            'data': snapshot,
+            'has_any_change': overall_has_change
+        }
+
+    def get_changes(self) -> Dict[str, Any]:
+        """Get only gold price changes (filters out unchanged providers).
+        
+        Returns:
+            Dict with:
+                - message: Formatted Vietnamese message string (None if no changes)
+                - data: Filtered snapshot with only changed providers
+                - total_changes: Number of changed items
+                - has_any_change: Boolean indicating if any changes detected
+        """
+        import datetime as dt_module
+        
+        snapshot = self.get_snapshot()
+        now = dt_module.datetime.now()
+        
+        vn_days = {
+            0: 'THỨ HAI', 1: 'THỨ BA', 2: 'THỨ TƯ',
+            3: 'THỨ NĂM', 4: 'THỨ SÁU', 5: 'THỨ BẢY', 6: 'CHỦ NHẬT'
+        }
+        day_name = vn_days.get(now.weekday(), 'CHỦ NHẬT')
+        date_header = f"{day_name} NGÀY {now.day:02d} THÁNG {now.month:02d} NĂM {now.year}"
+        time_header = now.strftime("%I:%M:%S %p")
+
+        lines = [
+            "THAY ĐỔI GIÁ VÀNG",
+            date_header,
+            time_header,
+            "(Chỉ hiển thị nhà cung cấp có thay đổi)",
+            "=" * 80,
+        ]
+
+        total_changes = 0
+        has_any_change = False
+        filtered_sources = []
+
+        for src in snapshot.get('sources', []):
+            name = src.get('name', 'Không rõ')
+            status = src.get('status')
+            has_change = src.get('has_any_change', False)
+
+            if status != 'ok' or not has_change:
+                continue
+
+            changed_items = [item for item in (src.get('items', []) or []) if item.get('has_price_change', False)]
+            if not changed_items:
+                continue
+
+            has_any_change = True
+            total_changes += len(changed_items)
+            
+            # Add to filtered sources
+            filtered_src = {**src, 'items': changed_items}
+            filtered_sources.append(filtered_src)
+            
+            provider_name = self._display_provider_name(name)
+            lines.append(f"Giá vàng {provider_name} [CÓ THAY ĐỔI]:")
+            items_by_code = {item.get('code'): item for item in changed_items}
+
+            for code in ['SJC', '999']:
+                item = items_by_code.get(code)
+                if not item:
+                    continue
+
+                buy = item.get('buyPrice')
+                sell = item.get('sellPrice')
+                buy_change = item.get('buyChange')
+                sell_change = item.get('sellChange')
+
+                lines.append(f"- {code} ●:")
+                lines.append(f"  MUA VÀO: {self._format_vn_price(buy)} VNĐ{self._format_change_arrow(buy_change)}")
+                lines.append(f"  BÁN RA : {self._format_vn_price(sell)} VNĐ{self._format_change_arrow(sell_change)}")
+                lines.append("")
+
+        if not has_any_change:
+            lines.append("Không có thay đổi giá nào được phát hiện.")
+            lines.append("")
+
+        lines.append("=" * 80)
+        lines.append(f"Tổng số mục thay đổi: {total_changes}")
+        lines.append("=" * 80)
+
+        filtered_snapshot = {
+            **snapshot,
+            'sources': filtered_sources
+        }
+
+        return {
+            'message': "\n".join(lines) if has_any_change else None,
+            'data': filtered_snapshot,
+            'total_changes': total_changes,
+            'has_any_change': has_any_change
+        }
+
+    def check_database(self) -> Dict[str, Any]:
+        """Check database status and return statistics.
+        
+        Returns:
+            Dict with database statistics and formatted message
+        """
+        if self.mongo_coll is None:
+            return {
+                'message': 'Không có kết nối MongoDB',
+                'total_count': 0,
+                'today_count': 0,
+                'stats': {}
+            }
+        
+        try:
+            import datetime as dt_module
+            from collections import Counter
+            
+            count = self.mongo_coll.count_documents({})
+            lines = [
+                "=" * 80,
+                "KIỂM TRA CƠ SỞ DỮ LIỆU",
+                "=" * 80,
+                f"Tổng số bản ghi: {count}"
+            ]
+            
+            stats = {
+                'total_count': count,
+                'today_count': 0,
+                'by_source_code': {},
+                'latest_records': []
+            }
+            
+            if count > 0:
+                today = dt_module.datetime.now().date()
+                recent_for_stats = list(self.mongo_coll.find().sort('timestamp', -1).limit(500))
+                today_docs = [
+                    doc for doc in recent_for_stats
+                    if hasattr(doc.get('timestamp'), 'date') and doc.get('timestamp').date() == today
+                ]
+                today_counter = Counter((doc.get('source', 'N/A'), doc.get('code', 'N/A')) for doc in today_docs)
+                
+                stats['today_count'] = len(today_docs)
+                stats['by_source_code'] = dict(today_counter)
+                
+                lines.append(f"Bản ghi hôm nay: {len(today_docs)}")
+                if today_counter:
+                    lines.append("Theo nguồn/mã (hôm nay):")
+                    for (src, code), qty in sorted(today_counter.items()):
+                        lines.append(f"  - {src:10s} | {code:5s} | {qty} bản ghi")
+                
+                # Show latest records
+                latest = list(self.mongo_coll.find().sort('timestamp', -1).limit(10))
+                lines.append(f"\n10 bản ghi gần nhất:")
+                for doc in latest:
+                    ts = doc.get('timestamp', 'N/A')
+                    src = doc.get('source', 'N/A')
+                    code = doc.get('code', 'N/A')
+                    buy = doc.get('buy')
+                    sell = doc.get('sell')
+                    lines.append(f"  {ts} | {src:10s} | {code:5s} | Mua: {self._format_vn_price(buy):15s} | Bán: {self._format_vn_price(sell):15s}")
+                    stats['latest_records'].append({
+                        'timestamp': ts,
+                        'source': src,
+                        'code': code,
+                        'buy': buy,
+                        'sell': sell
+                    })
+            else:
+                lines.append("\nCơ sở dữ liệu trống - lần chạy đầu tiên sẽ tạo dữ liệu cơ bản")
+            
+            lines.append("=" * 80)
+            
+            return {
+                'message': '\n'.join(lines),
+                **stats
+            }
+            
+        except Exception:
+            logging.exception("Lỗi khi kiểm tra database")
+            return {
+                'message': 'Lỗi khi kiểm tra database',
+                'total_count': 0,
+                'today_count': 0,
+                'stats': {}
+            }
