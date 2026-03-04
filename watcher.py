@@ -3,6 +3,7 @@ import datetime
 import logging
 import re
 from typing import Dict, Any, List, Optional
+from config import MONGO_URI, MONGO_DB_NAME, MONGO_COLLECTION
 
 try:
     from pymongo import MongoClient, ASCENDING, DESCENDING
@@ -19,7 +20,7 @@ class GoldWatcher:
       job_queue.run_repeating(watcher.job, interval=900, first=10)
     """
 
-    def __init__(self, agent, mongo_uri: str, db_name: str = 'Telegram_bot_database', collection: str = 'gold-price-collection', chat_id: Optional[int] = None):
+    def __init__(self, agent, mongo_uri: str, db_name: str = MONGO_DB_NAME, collection: str = MONGO_COLLECTION, chat_id: Optional[int] = None):
         if MongoClient is None:
             raise RuntimeError('pymongo is required for GoldWatcher (install pymongo)')
         self.agent = agent
@@ -31,8 +32,216 @@ class GoldWatcher:
         try:
             self.coll.create_index([('source', ASCENDING), ('code', ASCENDING), ('timestamp', DESCENDING)])
         except Exception:
-            logging.exception('Could not create index on gold-price-collection')
+            logging.exception('Could not create index on %s', collection)
         self.chat_id = chat_id
+
+    @staticmethod
+    def _format_vn_price(val: Optional[int]) -> str:
+        if val is None:
+            return "Không có"
+        try:
+            return f"{int(val):,}".replace(',', '.')
+        except Exception:
+            return str(val)
+
+    @staticmethod
+    def _format_change_arrow(change: Optional[int]) -> str:
+        if change is None or change == 0:
+            return ""
+        arrow = "↑" if change > 0 else "↓"
+        change_str = f"{change:+,}".replace(',', '.')
+        return f" ({change_str} {arrow})"
+
+    @staticmethod
+    def _display_provider_name(name: str) -> str:
+        if not name:
+            return "Không rõ"
+        name_map = {
+            "Ngoc Tham": "Ngọc Thẩm",
+        }
+        return name_map.get(name, name)
+
+    @staticmethod
+    def _source_key(source: str) -> str:
+        return re.sub(r"\s+", "", (source or "")).lower()
+
+    def _compute_change_vs_yesterday(self, source: str, code: str, buy_price: Optional[int], sell_price: Optional[int]):
+        """Return (buy_change, sell_change) vs latest record of yesterday for source/code."""
+        if self.coll is None:
+            return None, None
+
+        try:
+            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_start = today_start - datetime.timedelta(days=1)
+
+            last_yesterday = self.coll.find_one(
+                {
+                    "source": self._source_key(source),
+                    "code": code,
+                    "timestamp": {"$gte": yesterday_start, "$lt": today_start},
+                },
+                sort=[("timestamp", -1)],
+            )
+
+            if not last_yesterday:
+                return None, None
+
+            y_buy = last_yesterday.get("buy")
+            y_sell = last_yesterday.get("sell")
+
+            buy_change = None if buy_price is None or y_buy is None else (buy_price - y_buy)
+            sell_change = None if sell_price is None or y_sell is None else (sell_price - y_sell)
+            return buy_change, sell_change
+        except Exception:
+            logging.exception("Không tính được thay đổi so với hôm qua cho %s/%s", source, code)
+            return None, None
+
+    def _get_snapshot(self) -> Dict[str, Any]:
+        try:
+            snapshot = self.agent.get_gold_price()
+            return snapshot if isinstance(snapshot, dict) else {}
+        except Exception:
+            logging.exception("Failed to get gold snapshot from agent")
+            return {}
+
+    def build_info_message(self, snapshot: Dict[str, Any]) -> str:
+        now = datetime.datetime.now()
+        vn_days = {
+            0: 'THỨ HAI',
+            1: 'THỨ BA',
+            2: 'THỨ TƯ',
+            3: 'THỨ NĂM',
+            4: 'THỨ SÁU',
+            5: 'THỨ BẢY',
+            6: 'CHỦ NHẬT'
+        }
+        day_name = vn_days.get(now.weekday(), 'CHỦ NHẬT')
+        date_header = f"{day_name} NGÀY {now.day:02d} THÁNG {now.month:02d} NĂM {now.year}"
+        time_header = now.strftime("%I:%M:%S %p")
+
+        lines: List[str] = [
+            "THÔNG TIN GIÁ VÀNG",
+            date_header,
+            time_header,
+            "=" * 80,
+        ]
+
+        has_data = False
+        for src in snapshot.get('sources', []):
+            provider_name = self._display_provider_name(src.get('name', 'Unknown'))
+            source_name = src.get('name', 'Unknown')
+            status = src.get('status')
+            has_any_change = src.get('has_any_change', False)
+
+            if status != 'ok':
+                continue
+
+            change_marker = " [CÓ THAY ĐỔI]" if has_any_change else ""
+            lines.append(f"Giá vàng {provider_name}{change_marker}:")
+
+            items = src.get('items', [])
+            items_by_code = {item.get('code'): item for item in items}
+
+            for code in ['SJC', '999']:
+                item = items_by_code.get(code)
+                if not item:
+                    continue
+
+                has_data = True
+                buy = item.get('buyPrice')
+                sell = item.get('sellPrice')
+                buy_change = item.get('buyChange')
+                sell_change = item.get('sellChange')
+                has_change = item.get('has_price_change', False)
+                buy_ref_note = ""
+                sell_ref_note = ""
+
+                if not has_any_change and not has_change:
+                    y_buy_change, y_sell_change = self._compute_change_vs_yesterday(source_name, code, buy, sell)
+                    if y_buy_change not in (None, 0):
+                        buy_change = y_buy_change
+                        buy_ref_note = " [so với hôm qua]"
+                    if y_sell_change not in (None, 0):
+                        sell_change = y_sell_change
+                        sell_ref_note = " [so với hôm qua]"
+
+                code_marker = " ●" if has_change else ""
+                lines.append(f"- {code}{code_marker}:")
+                lines.append(f"  MUA VÀO: {self._format_vn_price(buy)} VNĐ{self._format_change_arrow(buy_change)}{buy_ref_note}")
+                lines.append(f"  BÁN RA : {self._format_vn_price(sell)} VNĐ{self._format_change_arrow(sell_change)}{sell_ref_note}")
+                lines.append("")
+
+        if not has_data:
+            lines.append("Không có dữ liệu giá vàng.")
+
+        return "\n".join(lines).strip()
+
+    def build_changes_message(self, snapshot: Dict[str, Any]) -> Optional[str]:
+        now = datetime.datetime.now()
+        vn_days = {
+            0: 'THỨ HAI',
+            1: 'THỨ BA',
+            2: 'THỨ TƯ',
+            3: 'THỨ NĂM',
+            4: 'THỨ SÁU',
+            5: 'THỨ BẢY',
+            6: 'CHỦ NHẬT'
+        }
+        day_name = vn_days.get(now.weekday(), 'CHỦ NHẬT')
+        date_header = f"{day_name} NGÀY {now.day:02d} THÁNG {now.month:02d} NĂM {now.year}"
+        time_header = now.strftime("%I:%M:%S %p")
+
+        lines: List[str] = [
+            "THAY ĐỔI GIÁ VÀNG",
+            date_header,
+            time_header,
+            "(Chỉ hiển thị nhà cung cấp có thay đổi)",
+            "=" * 80,
+        ]
+
+        total_changes = 0
+        has_any_change = False
+
+        for src in snapshot.get('sources', []):
+            name = src.get('name', 'Không rõ')
+            status = src.get('status')
+            has_change = src.get('has_any_change', False)
+
+            if status != 'ok' or not has_change:
+                continue
+
+            changed_items = [item for item in (src.get('items', []) or []) if item.get('has_price_change', False)]
+            if not changed_items:
+                continue
+
+            has_any_change = True
+            total_changes += len(changed_items)
+            provider_name = self._display_provider_name(name)
+            lines.append(f"Giá vàng {provider_name} [CÓ THAY ĐỔI]:")
+            items_by_code = {item.get('code'): item for item in changed_items}
+
+            for code in ['SJC', '999']:
+                item = items_by_code.get(code)
+                if not item:
+                    continue
+
+                buy = item.get('buyPrice')
+                sell = item.get('sellPrice')
+                buy_change = item.get('buyChange')
+                sell_change = item.get('sellChange')
+
+                lines.append(f"- {code} ●:")
+                lines.append(f"  MUA VÀO: {self._format_vn_price(buy)} VNĐ{self._format_change_arrow(buy_change)}")
+                lines.append(f"  BÁN RA : {self._format_vn_price(sell)} VNĐ{self._format_change_arrow(sell_change)}")
+                lines.append("")
+
+        lines.append("=" * 80)
+        lines.append(f"Tổng số mục thay đổi: {total_changes}")
+        lines.append("=" * 80)
+
+        if not has_any_change:
+            return None
+        return "\n".join(lines).strip()
 
     @staticmethod
     def _to_int(val: Any) -> Optional[int]:
@@ -209,7 +418,7 @@ class GoldWatcher:
             is_empty = False
 
         if is_empty:
-            logging.info('gold-price-collection empty — seeding current fetched prices')
+            logging.info('%s empty — seeding current fetched prices', self.coll.name)
             for s in sources:
                 src = s.get('source')
                 text = s.get('text')
@@ -364,51 +573,62 @@ class GoldWatcher:
 
         return result
 
-    async def job(self, context):
-        """Async job wrapper suitable for python-telegram-bot job_queue.
-
-        Example registration (in BOT.py):
-          jobq.run_repeating(watcher.job, interval=900, first=10)
-        """
-        try:
-            changes = await asyncio.to_thread(self.check_and_store)
-        except Exception:
-            logging.exception('Watcher check_and_store failed')
+    async def job_info(self, context):
+        """Periodic sender: always send `info` style message."""
+        snapshot = self._get_snapshot()
+        if not snapshot:
+            logging.info('GoldWatcher info job: no snapshot data')
             return
 
-        if not changes:
-            logging.debug('GoldWatcher: no changes detected')
+        message = self.build_info_message(snapshot)
+        if not message:
             return
 
-        # Build a short message summarizing changes
-        parts = []
-        for ch in changes:
-            code = ch.get('code')
-            src = ch.get('source')
-            buy = ch.get('buy')
-            sell = ch.get('sell')
-            parts.append(f"[{src}] {code}: mua={buy or 'N/A'} bán={sell or 'N/A'}")
-        message = "Giá vàng cập nhật:\n" + "\n".join(parts)
-
-        # try to get chat id from watcher config or job context
         chat_id = self.chat_id
         if chat_id is None:
-            # context may carry a chat id via job context
             try:
                 chat_id = getattr(context.job, 'context', None) or getattr(context, 'chat_id', None)
             except Exception:
                 chat_id = None
 
         if chat_id is None:
-            logging.info('GoldWatcher detected changes but no chat_id configured; skipping alert')
+            logging.info('GoldWatcher info job: no chat_id configured; skipping alert')
             return
 
         try:
             await context.bot.send_message(chat_id=chat_id, text=message)
         except Exception:
-            logging.exception('Failed to send gold update message')
+            logging.exception('Failed to send gold info message')
+
+    async def job(self, context):
+        """Change sender: send only when there are changes (`changes` style)."""
+        snapshot = self._get_snapshot()
+        if not snapshot:
+            logging.info('GoldWatcher changes job: no snapshot data')
+            return
+
+        message = self.build_changes_message(snapshot)
+        if not message:
+            logging.debug('GoldWatcher: no changes detected')
+            return
+
+        chat_id = self.chat_id
+        if chat_id is None:
+            try:
+                chat_id = getattr(context.job, 'context', None) or getattr(context, 'chat_id', None)
+            except Exception:
+                chat_id = None
+
+        if chat_id is None:
+            logging.info('GoldWatcher changes job: no chat_id configured; skipping alert')
+            return
+
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=message)
+        except Exception:
+            logging.exception('Failed to send gold changes message')
 
 
-DEFAULT_MONGO_URI = 'mongodb+srv://banchi0072000_db_user:e1eWC71hSnWVzvkw@milo-database.oopvg0c.mongodb.net/?appName=milo-database'
+DEFAULT_MONGO_URI = MONGO_URI
 
 __all__ = ['GoldWatcher', 'DEFAULT_MONGO_URI']

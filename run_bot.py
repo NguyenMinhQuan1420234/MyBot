@@ -1,7 +1,15 @@
 import subprocess
 import sys
 import logging
+import re
 from typing import Dict, Any, List
+from config import MONGO_URI, MONGO_DB_NAME, MONGO_COLLECTION
+
+# Fix Windows console encoding for Vietnamese characters
+if sys.platform == 'win32':
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -35,19 +43,63 @@ def display_provider_name(name: str) -> str:
     return name_map.get(name, name)
 
 
+def _source_key(source: str) -> str:
+    return re.sub(r"\s+", "", (source or "")).lower()
+
+
+def _compute_change_vs_yesterday(source: str, code: str, buy_price: int, sell_price: int):
+    """Return (buy_change, sell_change) vs latest record of yesterday for source/code."""
+    if not MONGO_URI:
+        return None, None
+
+    try:
+        from pymongo import MongoClient
+        from datetime import datetime, timedelta
+
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        coll = client[MONGO_DB_NAME][MONGO_COLLECTION]
+
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+
+        last_yesterday = coll.find_one(
+            {
+                "source": _source_key(source),
+                "code": code,
+                "timestamp": {"$gte": yesterday_start, "$lt": today_start},
+            },
+            sort=[("timestamp", -1)],
+        )
+
+        if not last_yesterday:
+            return None, None
+
+        y_buy = last_yesterday.get("buy")
+        y_sell = last_yesterday.get("sell")
+
+        buy_change = None if buy_price is None or y_buy is None else (buy_price - y_buy)
+        sell_change = None if sell_price is None or y_sell is None else (sell_price - y_sell)
+        return buy_change, sell_change
+    except Exception:
+        logging.exception("Không tính được thay đổi so với hôm qua cho %s/%s", source, code)
+        return None, None
+
+
 def cleanup_database():
     """Check and cleanup database if needed."""
     try:
         from pymongo import MongoClient
-        from watcher import DEFAULT_MONGO_URI
+        from datetime import datetime
+        from collections import Counter
         
-        if not DEFAULT_MONGO_URI:
-            print("Không có cấu hình MongoDB URI")
+        if not MONGO_URI:
+            print("Không có cấu hình MongoDB URI (MONGO_URI)")
+            print("Vui lòng cấu hình trong BOT_TOKEN.env/.env hoặc GitHub Actions secrets.")
             return
         
-        client = MongoClient(DEFAULT_MONGO_URI, serverSelectionTimeoutMS=5000)
-        db = client['bot']
-        coll = db['prices']
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db = client[MONGO_DB_NAME]
+        coll = db[MONGO_COLLECTION]
         
         count = coll.count_documents({})
         print(f"\n{'='*80}")
@@ -56,6 +108,20 @@ def cleanup_database():
         print(f"Tổng số bản ghi: {count}")
         
         if count > 0:
+            today = datetime.now().date()
+            recent_for_stats = list(coll.find().sort('timestamp', -1).limit(500))
+            today_docs = [
+                doc for doc in recent_for_stats
+                if hasattr(doc.get('timestamp'), 'date') and doc.get('timestamp').date() == today
+            ]
+            today_counter = Counter((doc.get('source', 'N/A'), doc.get('code', 'N/A')) for doc in today_docs)
+
+            print(f"Bản ghi hôm nay: {len(today_docs)}")
+            if today_counter:
+                print("Theo nguồn/mã (hôm nay):")
+                for (src, code), qty in sorted(today_counter.items()):
+                    print(f"  - {src:10s} | {code:5s} | {qty} bản ghi")
+
             # Show latest records
             latest = list(coll.find().sort('timestamp', -1).limit(10))
             print(f"\n10 bản ghi gần nhất:")
@@ -75,7 +141,7 @@ def cleanup_database():
         logging.exception(f"Lỗi khi kiểm tra database: {e}")
 
 
-def show_all_provider_info() -> Dict[str, Any]:
+def show_all_provider_info(snapshot: Dict[str, Any] = None) -> Dict[str, Any]:
     """Hiển thị tất cả thông tin từ các nhà cung cấp giá vàng.
     
     Returns:
@@ -96,9 +162,10 @@ def show_all_provider_info() -> Dict[str, Any]:
             except:
                 pass  # Use default if Vietnamese locale not available
         
-        api_client = APIClient()
-        gold_service = GoldPriceService(api_client)
-        snapshot = gold_service.get_snapshot()
+        if snapshot is None:
+            api_client = APIClient()
+            gold_service = GoldPriceService(api_client)
+            snapshot = gold_service.get_snapshot()
         
         # Get current time
         now = datetime.now()
@@ -127,12 +194,16 @@ def show_all_provider_info() -> Dict[str, Any]:
         
         for src in snapshot.get('sources', []):
             provider_name = display_provider_name(src.get('name', 'Unknown'))
+            source_name = src.get('name', 'Unknown')
             status = src.get('status')
+            has_any_change = src.get('has_any_change', False)
 
             if status != 'ok':
                 continue
 
-            print(f"Giá vàng {provider_name}:")
+            # Show provider name with change indicator
+            change_marker = " [CÓ THAY ĐỔI]" if has_any_change else ""
+            print(f"Giá vàng {provider_name}{change_marker}:")
             items = src.get('items', [])
             items_by_code = {item.get('code'): item for item in items}
 
@@ -145,16 +216,33 @@ def show_all_provider_info() -> Dict[str, Any]:
                 sell = item.get('sellPrice')
                 buy_change = item.get('buyChange')
                 sell_change = item.get('sellChange')
+                has_change = item.get('has_price_change', False)
+                buy_ref_note = ""
+                sell_ref_note = ""
 
-                print(f"- {code}:")
-                if sell is not None:
-                    sell_str = format_vn_price(sell)
-                    sell_change_str = format_change_arrow(sell_change)
-                    print(f"  • Giá bán: {sell_str} VNĐ{sell_change_str}")
-                if buy is not None:
-                    buy_str = format_vn_price(buy)
-                    buy_change_str = format_change_arrow(buy_change)
-                    print(f"  • Giá mua: {buy_str} VNĐ{buy_change_str}")
+                # Info-only fallback:
+                # if provider has no intraday changes, compare with yesterday.
+                if not has_any_change and not has_change:
+                    y_buy_change, y_sell_change = _compute_change_vs_yesterday(source_name, code, buy, sell)
+                    if y_buy_change not in (None, 0):
+                        buy_change = y_buy_change
+                        buy_ref_note = " [so với hôm qua]"
+                    if y_sell_change not in (None, 0):
+                        sell_change = y_sell_change
+                        sell_ref_note = " [so với hôm qua]"
+
+                # Show code with change indicator
+                code_marker = " ●" if has_change else ""
+                print(f"- {code}{code_marker}:")
+                
+                # Display in clearer MUA | BÁN format
+                buy_str = format_vn_price(buy) if buy is not None else "Không có"
+                sell_str = format_vn_price(sell) if sell is not None else "Không có"
+                buy_change_str = format_change_arrow(buy_change)
+                sell_change_str = format_change_arrow(sell_change)
+
+                print(f"  MUA VÀO: {buy_str} VNĐ{buy_change_str}{buy_ref_note}")
+                print(f"  BÁN RA : {sell_str} VNĐ{sell_change_str}{sell_ref_note}")
                 print()
         
         print("="*80)
@@ -167,7 +255,7 @@ def show_all_provider_info() -> Dict[str, Any]:
         return {}
 
 
-def check_price_changes() -> Dict[str, List[Dict[str, Any]]]:
+def check_price_changes(snapshot: Dict[str, Any] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Kiểm tra thay đổi giá trên tất cả các nhà cung cấp.
     
     Returns:
@@ -176,15 +264,48 @@ def check_price_changes() -> Dict[str, List[Dict[str, Any]]]:
     try:
         from api_client import APIClient
         from crawl_gold_price import GoldPriceService
+        from datetime import datetime
+        import locale
         
-        api_client = APIClient()
-        gold_service = GoldPriceService(api_client)
-        snapshot = gold_service.get_snapshot()
+        # Try to set Vietnamese locale for day names
+        try:
+            locale.setlocale(locale.LC_TIME, 'vi_VN.UTF-8')
+        except:
+            try:
+                locale.setlocale(locale.LC_TIME, 'Vietnamese_Vietnam.1258')
+            except:
+                pass  # Use default if Vietnamese locale not available
+        
+        if snapshot is None:
+            api_client = APIClient()
+            gold_service = GoldPriceService(api_client)
+            snapshot = gold_service.get_snapshot()
+        
+        # Get current time
+        now = datetime.now()
+        
+        # Vietnamese day names mapping
+        vn_days = {
+            0: 'THỨ HAI',
+            1: 'THỨ BA', 
+            2: 'THỨ TƯ',
+            3: 'THỨ NĂM',
+            4: 'THỨ SÁU',
+            5: 'THỨ BẢY',
+            6: 'CHỦ NHẬT'
+        }
+        day_name = vn_days.get(now.weekday(), 'CHỦ NHẬT')
+        
+        # Format: THỨ X NGÀY DD THÁNG MM NĂM YYYY
+        date_header = f"{day_name} NGÀY {now.day:02d} THÁNG {now.month:02d} NĂM {now.year}"
+        time_header = now.strftime("%I:%M:%S %p")
         
         print("\n" + "="*80)
-        print("PHÁT HIỆN THAY ĐỔI GIÁ CHO TẤT CẢ CÁC NHÀ CUNG CẤP")
+        print("THAY ĐỔI GIÁ VÀNG")
+        print(date_header)
+        print(time_header)
+        print("(Chỉ hiển thị nhà cung cấp có thay đổi)")
         print("="*80)
-        print(f"Thời gian kiểm tra: {snapshot.get('as_of')}\n")
         
         changes_by_provider = {}
         total_changes = 0
@@ -194,19 +315,15 @@ def check_price_changes() -> Dict[str, List[Dict[str, Any]]]:
         for src in snapshot.get('sources', []):
             name = src.get('name', 'Không rõ')
             status = src.get('status')
+            has_change = src.get('has_any_change', False)
             
-            print(f"\n{'─'*80}")
-            print(f"Nhà cung cấp: {name}")
-            print(f"Trạng thái: {status.upper()}")
-            
-            if status != 'ok':
-                print(f"Lỗi: {src.get('error', 'Lỗi không xác định')}")
+            # Only process providers with changes and OK status
+            if status != 'ok' or not has_change:
                 changes_by_provider[name] = []
                 continue
             
             items = src.get('items', [])
             if not items:
-                print("Không có mục để kiểm tra")
                 changes_by_provider[name] = []
                 continue
             
@@ -217,34 +334,42 @@ def check_price_changes() -> Dict[str, List[Dict[str, Any]]]:
             
             if changed_items:
                 has_any_change = True
-                print(f"Các mục có thay đổi giá: {len(changed_items)}")
-                for item in changed_items:
-                    code = item.get('code', 'N/A')
+                provider_name = display_provider_name(name)
+                print(f"Giá vàng {provider_name} [CÓ THAY ĐỔI]:")
+                
+                # Group items by code for consistent ordering
+                items_by_code = {item.get('code'): item for item in changed_items}
+                
+                for code in ['SJC', '999']:
+                    item = items_by_code.get(code)
+                    if not item:
+                        continue
+                    
                     buy = item.get('buyPrice')
                     sell = item.get('sellPrice')
                     buy_change = item.get('buyChange')
                     sell_change = item.get('sellChange')
                     
-                    print(f"\n  → {code}")
-                    if buy is not None:
-                        buy_str = format_vn_price(buy)
-                        print(f"    Mua: {buy_str} VNĐ")
-                    if buy_change is not None:
-                        buy_change_str = f"{buy_change:+,}".replace(',', '.')
-                        print(f"    Thay đổi mua: {buy_change_str}")
-                    if sell is not None:
-                        sell_str = format_vn_price(sell)
-                        print(f"    Bán: {sell_str} VNĐ")
-                    if sell_change is not None:
-                        sell_change_str = f"{sell_change:+,}".replace(',', '.')
-                        print(f"    Thay đổi bán: {sell_change_str}")
-            else:
-                print("Không phát hiện thay đổi giá")
+                    print(f"- {code} ●:")
+                    
+                    # Display in MUA VÀO | BÁN RA format
+                    buy_str = format_vn_price(buy) if buy is not None else "Không có"
+                    sell_str = format_vn_price(sell) if sell is not None else "Không có"
+                    buy_change_str = format_change_arrow(buy_change)
+                    sell_change_str = format_change_arrow(sell_change)
+                    
+                    print(f"  MUA VÀO: {buy_str} VNĐ{buy_change_str}")
+                    print(f"  BÁN RA : {sell_str} VNĐ{sell_change_str}")
+                    print()
         
-        print(f"\n{'─'*80}")
-        print(f"\nTổng số thay đổi giá: {total_changes}")
-        print(f"Có thay đổi: {'Có' if has_any_change else 'Không'}")
-        print(f"{'='*80}\n")
+        if not has_any_change:
+            print("Không có thay đổi giá nào được phát hiện.")
+            print()
+        
+        print("="*80)
+        print(f"Tổng số mục thay đổi: {total_changes}")
+        print("="*80)
+        print()
         
         return {
             'changes_by_provider': changes_by_provider,
@@ -272,8 +397,15 @@ if __name__ == "__main__":
             check_price_changes()
         elif command == "full":
             # Run both checks
-            show_all_provider_info()
-            check_price_changes()
+            from api_client import APIClient
+            from crawl_gold_price import GoldPriceService
+
+            api_client = APIClient()
+            gold_service = GoldPriceService(api_client)
+            shared_snapshot = gold_service.get_snapshot()
+
+            show_all_provider_info(shared_snapshot)
+            check_price_changes(shared_snapshot)
         elif command == "db":
             # Check database
             cleanup_database()

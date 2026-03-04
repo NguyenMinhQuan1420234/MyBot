@@ -3,18 +3,13 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional, Protocol
+from config import MONGO_URI, MONGO_DB_NAME, MONGO_COLLECTION
 
 try:
     from pymongo import MongoClient, DESCENDING
 except Exception:
     MongoClient = None
     DESCENDING = None
-
-try:
-    from watcher import DEFAULT_MONGO_URI
-except Exception:
-    DEFAULT_MONGO_URI = None
-
 
 class GoldPriceProvider(Protocol):
     name: str
@@ -33,15 +28,16 @@ class _CallableGoldPriceProvider:
 
 
 class GoldPriceService:
-    def __init__(self, api_client, mongo_uri: Optional[str] = DEFAULT_MONGO_URI,
-                 db_name: str = 'bot', collection: str = 'prices'):
+    def __init__(self, api_client, mongo_uri: Optional[str] = None,
+                 db_name: str = MONGO_DB_NAME, collection: str = MONGO_COLLECTION):
         self.api_client = api_client
         self.mongo_client = None
         self.mongo_db = None
         self.mongo_coll = None
-        if MongoClient and mongo_uri:
+        effective_mongo_uri = mongo_uri if mongo_uri is not None else MONGO_URI
+        if MongoClient and effective_mongo_uri:
             try:
-                self.mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+                self.mongo_client = MongoClient(effective_mongo_uri, serverSelectionTimeoutMS=5000)
                 self.mongo_db = self.mongo_client[db_name]
                 self.mongo_coll = self.mongo_db[collection]
             except Exception:
@@ -79,9 +75,31 @@ class GoldPriceService:
                 }
 
             if result.get("status") == "ok":
+                # Apply change detection and computation for each item
+                has_any_change = False
                 for item in result.get("items", []):
                     self._apply_db_change(result.get("name"), item)
+                    
+                    # has_price_change is based on baseline comparison (for display)
+                    if item.get("has_price_change", False):
+                        has_any_change = True
+                    
+                    # Store to DB if price changed from last stored value
+                    # (insert_if_changed handles the check internally)
+                    self.insert_if_changed(
+                        result.get("name"),
+                        item.get("code"),
+                        item.get("buyPrice"),
+                        item.get("sellPrice"),
+                        item.get("dateTime"),
+                    )
+                
+                # Add source-level change flag
+                result["has_any_change"] = has_any_change
                 snapshot["normalized"].extend(result.get("items", []))
+            else:
+                # Mark error sources as having no changes
+                result["has_any_change"] = False
 
             snapshot["sources"].append(result)
 
@@ -197,28 +215,61 @@ class GoldPriceService:
         return re.sub(r"\s+", "", (source or "")).lower()
 
     def _compute_price_change(self, source: str, code: str, current_price: Optional[int], price_type: str) -> Optional[int]:
-        """Compute price change vs. last stored price in MongoDB."""
-        if self.mongo_coll is None or current_price is None:
+        """Compute price change vs. baseline price (first price of the day) in MongoDB."""
+        if self.mongo_coll is None:
+            logging.debug("No MongoDB connection for %s/%s", source, code)
+            return None
+        if current_price is None:
+            logging.debug("Current price is None for %s/%s %s", source, code, price_type)
             return None
         try:
+            import datetime as dt_module
             src_key = self._source_key(source)
-            last_doc = self.mongo_coll.find_one(
-                {"source": src_key, "code": code},
-                sort=[("timestamp", -1)],
+            
+            # Get the start of today (00:00:00)
+            today_start = dt_module.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Find the FIRST (oldest) price recorded today as baseline
+            baseline_doc = self.mongo_coll.find_one(
+                {
+                    "source": src_key,
+                    "code": code,
+                    "timestamp": {"$gte": today_start}
+                },
+                sort=[("timestamp", 1)],  # Ascending - get FIRST of day
             )
-            if not last_doc:
+            
+            if not baseline_doc:
+                # No data today yet, try to get yesterday's last price as baseline
+                yesterday_start = today_start - dt_module.timedelta(days=1)
+                baseline_doc = self.mongo_coll.find_one(
+                    {
+                        "source": src_key,
+                        "code": code,
+                        "timestamp": {"$gte": yesterday_start, "$lt": today_start}
+                    },
+                    sort=[("timestamp", -1)],  # Descending - get last of yesterday
+                )
+            
+            if not baseline_doc:
+                logging.info("No baseline data found for %s/%s (source_key=%s) - first time collecting", source, code, src_key)
                 return None
-            last_price = last_doc.get(price_type)
-            if last_price is None:
+                
+            baseline_price = baseline_doc.get(price_type)
+            if baseline_price is None:
+                logging.warning("Baseline doc exists but %s is None for %s/%s", price_type, source, code)
                 return None
-            change = current_price - last_price
+                
+            change = current_price - baseline_price
+            baseline_time = baseline_doc.get('timestamp', 'unknown')
             logging.info(
-                "Computed %s change for %s/%s: %d - %d = %d",
+                "Computed %s change for %s/%s: %d - %d (baseline: %s) = %d",
                 price_type,
                 source,
                 code,
                 current_price,
-                last_price,
+                baseline_price,
+                baseline_time,
                 change,
             )
             return change
@@ -330,18 +381,26 @@ class GoldPriceService:
         api_buy_change = item.get('buyChange')
         api_sell_change = item.get('sellChange')
         
-        # If API didn't provide changes, compute from DB
+        logging.debug("_apply_db_change for %s/%s: api_buy_change=%s, api_sell_change=%s", 
+                     source, code, api_buy_change, api_sell_change)
+        
+        # If API didn't provide changes, compute from DB baseline
         if api_buy_change is None:
-            item['buyChange'] = self._compute_price_change(source, code, buy_price, 'buy')
+            computed_buy = self._compute_price_change(source, code, buy_price, 'buy')
+            item['buyChange'] = computed_buy
+            logging.debug("Computed buy change for %s/%s: %s", source, code, computed_buy)
         if api_sell_change is None:
-            item['sellChange'] = self._compute_price_change(source, code, sell_price, 'sell')
+            computed_sell = self._compute_price_change(source, code, sell_price, 'sell')
+            item['sellChange'] = computed_sell
+            logging.debug("Computed sell change for %s/%s: %s", source, code, computed_sell)
         
         item['change'] = {
             'buy': item.get('buyChange'),
             'sell': item.get('sellChange'),
         }
         
-        # Check if price has changed for selective storage
+        # CRITICAL: has_price_change must check against LAST STORED value (not baseline)
+        # This ensures "changes" command only shows NEW changes, not repeated baseline diffs
         item['has_price_change'] = self._check_price_change(source, code, buy_price, sell_price)
 
     def _fetch_mihong_prices_struct(self):
