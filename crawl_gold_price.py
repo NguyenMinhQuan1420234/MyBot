@@ -847,7 +847,6 @@ class GoldPriceService:
             "THÔNG TIN GIÁ VÀNG",
             date_header,
             time_header,
-            "=" * 80,
         ]
 
         has_data = False
@@ -904,7 +903,6 @@ class GoldPriceService:
         if not has_data:
             lines.append("Không có dữ liệu giá vàng.")
 
-        lines.append("=" * 80)
         message = "\n".join(lines)
 
         return {
@@ -945,7 +943,6 @@ class GoldPriceService:
             "THAY ĐỔI GIÁ VÀNG",
             date_header,
             time_header,
-            "=" * 80,
         ]
 
         total_changes = 0
