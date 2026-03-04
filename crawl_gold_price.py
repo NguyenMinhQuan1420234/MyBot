@@ -828,7 +828,12 @@ class GoldPriceService:
         import datetime as dt_module
         
         snapshot = self.get_snapshot()
-        now = dt_module.datetime.now()
+        # use Hanoi/GMT+7 time for headers
+        try:
+            from zoneinfo import ZoneInfo
+            now = dt_module.datetime.now(ZoneInfo('Asia/Ho_Chi_Minh'))
+        except Exception:
+            now = dt_module.datetime.utcnow() + dt_module.timedelta(hours=7)
         
         vn_days = {
             0: 'THỨ HAI', 1: 'THỨ BA', 2: 'THỨ TƯ',
@@ -921,7 +926,12 @@ class GoldPriceService:
         import datetime as dt_module
         
         snapshot = self.get_snapshot()
-        now = dt_module.datetime.now()
+        # use GMT+7 / Hanoi time
+        try:
+            from zoneinfo import ZoneInfo
+            now = dt_module.datetime.now(ZoneInfo('Asia/Ho_Chi_Minh'))
+        except Exception:
+            now = dt_module.datetime.utcnow() + dt_module.timedelta(hours=7)
         
         vn_days = {
             0: 'THỨ HAI', 1: 'THỨ BA', 2: 'THỨ TƯ',
@@ -935,7 +945,6 @@ class GoldPriceService:
             "THAY ĐỔI GIÁ VÀNG",
             date_header,
             time_header,
-            "(Chỉ hiển thị nhà cung cấp có thay đổi)",
             "=" * 80,
         ]
 
@@ -985,9 +994,7 @@ class GoldPriceService:
             lines.append("Không có thay đổi giá nào được phát hiện.")
             lines.append("")
 
-        lines.append("=" * 80)
-        lines.append(f"Tổng số mục thay đổi: {total_changes}")
-        lines.append("=" * 80)
+        # summary lines intentionally omitted for consistency
 
         filtered_snapshot = {
             **snapshot,

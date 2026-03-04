@@ -91,17 +91,27 @@ async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Send gold price to a given chat id (used by command and scheduled jobs)."""
+    """Send gold price to a given chat id (used by command and scheduled jobs).
+
+    Uses `GoldPriceService.get_info()` so formatting matches CLI and watcher
+    output. The service also handles database comparisons and message
+    composition, keeping behavior consistent across components.
+    """
     logging.info(f"Sending gold price to chat {chat_id}")
     if not agent:
         await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
         return
-    result = agent.get_gold_price()
-    if isinstance(result, dict) and result.get("message"):
-        text = str(result.get("message"))
-    elif isinstance(result, (dict, list)):
-        text = json.dumps(result, ensure_ascii=False, indent=2)
-    else:
-        text = str(result)
+
+    try:
+        from api_client import APIClient
+        from crawl_gold_price import GoldPriceService
+        api_client = APIClient()
+        service = GoldPriceService(api_client)
+        result = service.get_info()
+        text = result.get('message') or json.dumps(result.get('data', {}), ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.exception('Failed fetching gold info in send_gold_to')
+        text = f"Lỗi lấy thông tin giá vàng: {e}"
+
     for i in range(0, len(text), 4096):
         await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096])
