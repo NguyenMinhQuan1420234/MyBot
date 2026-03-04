@@ -1078,9 +1078,7 @@ class GoldPriceService:
                     })
             else:
                 lines.append("\nCơ sở dữ liệu trống - lần chạy đầu tiên sẽ tạo dữ liệu cơ bản")
-            
-            lines.append("=" * 80)
-            
+
             return {
                 'message': '\n'.join(lines),
                 **stats
