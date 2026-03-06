@@ -1,12 +1,23 @@
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, List
+
 from config import MONGO_URI, MONGO_DB_NAME, MONGO_COLLECTION
 
 try:
     from pymongo import MongoClient, ASCENDING, DESCENDING
-except Exception as e:
+except Exception:
     MongoClient = None
+    ASCENDING = None
+    DESCENDING = None
+
+# Prefer top-level imports for clarity; these may be missing in some test contexts
+try:
+    from api_client import APIClient
+    from crawl_gold_price import GoldPriceService
+except Exception:
+    APIClient = None
+    GoldPriceService = None
 
 
 class GoldWatcher:
@@ -31,17 +42,26 @@ class GoldWatcher:
             self.coll.create_index([('source', ASCENDING), ('code', ASCENDING), ('timestamp', DESCENDING)])
         except Exception:
             logging.exception('Could not create index on %s', collection)
-        self.chat_id = chat_id
+        # Normalize chat id(s) to a list for multi-chat sending
+        if chat_id is None:
+            self.chat_ids = []
+        elif isinstance(chat_id, (list, tuple, set)):
+            self.chat_ids = list(chat_id)
+        else:
+            self.chat_ids = [chat_id]
+        # keep backward-compatible single chat_id reference (first in list)
+        self.chat_id = self.chat_ids[0] if self.chat_ids else None
         
-        # Create GoldPriceService for formatting and data retrieval
+        # Create GoldPriceService for formatting and data retrieval (optional)
         self.gold_service = None
-        try:
-            from api_client import APIClient
-            from crawl_gold_price import GoldPriceService
-            api_client = APIClient()
-            self.gold_service = GoldPriceService(api_client, mongo_uri, db_name, collection)
-        except Exception:
-            logging.exception('Failed to create GoldPriceService in watcher')
+        if APIClient and GoldPriceService:
+            try:
+                api_client = APIClient()
+                self.gold_service = GoldPriceService(api_client, mongo_uri, db_name, collection)
+            except Exception:
+                logging.exception('Failed to create GoldPriceService in watcher')
+        else:
+            logging.debug('GoldPriceService not available; continuing without it')
 
     async def job_info(self, context):
         """Periodic sender: always send `info` style message."""
@@ -60,6 +80,17 @@ class GoldWatcher:
             logging.info('GoldWatcher info job: no message generated')
             return
 
+        # If configured with multiple chat ids, send to all of them
+        if self.chat_ids:
+            for cid in self.chat_ids:
+                try:
+                    kwargs = {'message_thread_id': 2} if cid == -1003835873764 else {}
+                    await context.bot.send_message(chat_id=cid, text=message, **kwargs)
+                except Exception:
+                    logging.exception('Failed to send gold info message to %s', cid)
+            return
+
+        # fallback: try to infer a single chat id from context
         chat_id = self.chat_id
         if chat_id is None:
             try:
@@ -72,7 +103,8 @@ class GoldWatcher:
             return
 
         try:
-            await context.bot.send_message(chat_id=chat_id, text=message)
+            kwargs = {'message_thread_id': 2} if chat_id == -1003835873764 else {}
+            await context.bot.send_message(chat_id=chat_id, text=message, **kwargs)
         except Exception:
             logging.exception('Failed to send gold info message')
 
@@ -94,6 +126,17 @@ class GoldWatcher:
             logging.debug('GoldWatcher: no changes detected')
             return
 
+        # If configured with multiple chat ids, send to all of them
+        if self.chat_ids:
+            for cid in self.chat_ids:
+                try:
+                    kwargs = {'message_thread_id': 2} if cid == -1003835873764 else {}
+                    await context.bot.send_message(chat_id=cid, text=message, **kwargs)
+                except Exception:
+                    logging.exception('Failed to send gold changes message to %s', cid)
+            return
+
+        # fallback: try to infer a single chat id from context
         chat_id = self.chat_id
         if chat_id is None:
             try:
@@ -106,15 +149,10 @@ class GoldWatcher:
             return
 
         try:
-            await context.bot.send_message(chat_id=chat_id, text=message)
+            kwargs = {'message_thread_id': 2} if chat_id == -1003835873764 else {}
+            await context.bot.send_message(chat_id=chat_id, text=message, **kwargs)
         except Exception:
             logging.exception('Failed to send gold changes message')
-
-
-DEFAULT_MONGO_URI = MONGO_URI
-
-__all__ = ['GoldWatcher', 'DEFAULT_MONGO_URI']
-
 
 
 DEFAULT_MONGO_URI = MONGO_URI

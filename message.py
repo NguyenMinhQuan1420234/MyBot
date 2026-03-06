@@ -7,6 +7,15 @@ from telegram import MessageEntity
 
 agent = None
 
+THREAD_CHAT_ID = -1003835873764
+THREAD_ID = 2
+
+
+def _send_kwargs(chat_id):
+    if chat_id == THREAD_CHAT_ID:
+        return {'message_thread_id': THREAD_ID}
+    return {}
+
 def set_agent(provider, api_key, **kwargs):
     global agent
     agent = Agent(provider, api_key, **kwargs)
@@ -44,7 +53,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     ai_response = agent.ask(text)
     logging.info(f"Bot reply to User({chat_id}): {ai_response}")
     for i in range(0, len(ai_response), 4096):
-        await context.bot.send_message(chat_id=chat_id, text=ai_response[i:i+4096])
+        await context.bot.send_message(chat_id=chat_id, text=ai_response[i:i+4096], **_send_kwargs(chat_id))
 
 
 async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,7 +65,7 @@ async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /money command. Usage: /money USD"""
     chat_id = update.effective_chat.id
     if not agent:
-        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
+        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id))
         return
     args = getattr(context, 'args', []) or []
     note = ''
@@ -80,14 +89,14 @@ async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = f"{note}{result}"
     for i in range(0, len(text), 4096):
-        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096])
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
 
 
 async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
     """Respond to /help with supported commands summary."""
     chat_id = update.effective_chat.id
     text = "Bot dỏm Tele hiện đang hỗ trợ 2 lệnh /gold và /money"
-    await context.bot.send_message(chat_id=chat_id, text=text)
+    await context.bot.send_message(chat_id=chat_id, text=text, **_send_kwargs(chat_id))
 
 
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
@@ -99,7 +108,7 @@ async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
     """
     logging.info(f"Sending gold price to chat {chat_id}")
     if not agent:
-        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
+        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id))
         return
 
     try:
@@ -114,4 +123,4 @@ async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
         text = f"Lỗi lấy thông tin giá vàng: {e}"
 
     for i in range(0, len(text), 4096):
-        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096])
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
