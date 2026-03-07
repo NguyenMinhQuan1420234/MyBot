@@ -1,0 +1,20 @@
+# MyBot - Telegram Bot with AI Integration
+# Python 3.10+ required
+
+# Core dependencies
+python-telegram-bot[job-queue]>=21.0
+python-dotenv>=1.0.0
+google-generativeai>=0.3.0
+pymongo[srv]>=4.0.0
+
+# HTTP and networking
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Optional AI providers (can be commented out if not needed)
+openai>=1.0.0
+xai-sdk>=0.1.0
+
+# Web automation and MCP
+# Note: Playwright MCP is installed via npx @playwright/mcp@latest
+# Requires Node.js to be installed

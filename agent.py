@@ -1,8 +1,11 @@
 import logging
 import json
 import xml.etree.ElementTree as ET
+import re
+from typing import Any, Dict, List, Optional, Protocol
 from mcp_playwright_agent import MCPPlaywrightAgent
 from api_client import APIClient
+from crawl_gold_price import GoldPriceService
 
 # Prefer requests if available, fall back to urllib
 try:
@@ -35,6 +38,7 @@ except ImportError:
     openai = None
 # Azure OpenAI can use openai with endpoint config
 
+
 class Agent:
     def __init__(self, provider, api_key, **kwargs):
         self.provider = provider.lower()
@@ -43,6 +47,9 @@ class Agent:
         self.mcp_agent = MCPPlaywrightAgent()
         # initialize a reusable API client (disable SSL verification for legacy endpoints)
         self.api_client = APIClient(verify=False)
+        # initialize gold price service with optional MongoDB URI for change computation
+        mongo_uri = kwargs.get('mongo_uri')
+        self.gold_service = GoldPriceService(self.api_client, mongo_uri=mongo_uri)
 
         if self.provider == "gemini" and genai:
             genai.configure(api_key=api_key)
@@ -100,107 +107,65 @@ class Agent:
         return self.mcp_agent.run_command(command)
 
     def get_gold_price(self):
-        """Shorter implementation: use APIClient for HTTP and keep concise parsing/formatting."""
-        url = "https://mihong.vn/api/v1/gold/prices/current"
-        headers = {
-            'x-requested-with': 'XMLHttpRequest',
-            'referer': 'https://mihong.vn/vi/gia-vang-trong-nuoc',
-            'Cookie': 'laravel_session=BjzTy5xwYchpU94uwsemKJZ4L5dqrLQ01iEgogfx'
-        }
-        # Retry logic: attempt up to 5 times with incremental backoff
-        max_retries = 5
-        resp = None
-        for attempt in range(1, max_retries + 1):
-            resp = self.api_client.get(url, headers=headers, timeout=10, verify=False)
-            if resp.get('ok'):
-                break
-            logging.warning("Gold API request failed (attempt %d/%d): %s", attempt, max_retries, resp.get('error'))
-            if attempt < max_retries:
-                # simple backoff: sleep 1s, 2s, 3s, ...
-                time.sleep(attempt)
-        else:
-            # all attempts failed
-            err = resp.get('error') if resp is not None else 'unknown error'
-            return f"Error fetching gold price after {max_retries} attempts: {err}"
+        return self.gold_service.get_snapshot()
 
-        text = resp.get('text', '')
-        parsed = resp.get('json')
+    def get_money_rate(self, code='usd'):
+        """Fetch fiat exchange info from external API and return formatted result.
 
-        def fmt_price(val):
-            if val is None:
-                return 'N/A'
-            try:
-                num = float(str(val).replace(',', '').strip())
-                return f"{int(round(num)):,}"
-            except Exception:
-                return str(val)
-
-        # Prefer JSON structured response
-        if isinstance(parsed, dict) and 'data' in parsed:
-            data = parsed.get('data') or []
-            # normalize to list
-            if isinstance(data, dict):
-                items = [v for v in (x for x in data.values()) if isinstance(v, dict) or isinstance(v, list)]
-                # flatten lists
-                flat = []
-                for it in items:
-                    if isinstance(it, list):
-                        flat.extend([x for x in it if isinstance(x, dict)])
-                    elif isinstance(it, dict):
-                        flat.append(it)
-                if not flat:
-                    flat = [data]
-                items = flat
-            else:
-                items = data
-
-            allowed = {"SJC", "999"}
-            out = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                code = (item.get('code') or item.get('Code') or '').strip()
-                if code not in allowed:
-                    continue
-                buying = item.get('buyingPrice') or item.get('Buy') or item.get('buy')
-                selling = item.get('sellingPrice') or item.get('Sell') or item.get('sell')
-                dt = item.get('dateTime') or item.get('date_time') or item.get('date') or ''
-                out.append(f"Giá của vàng {code} ngày {dt}:\n  - Giá mua: {fmt_price(buying)}\n  - Giá bán: {fmt_price(selling)}\n")
-            return "\n".join(out) if out else "Không tìm thấy dữ liệu giá vàng phù hợp."
-
-        # Try XML fallback
+        The API returns a JSON payload; we try to find the requested currency code
+        (case-insensitive). If not found, return a helpful message.
+        """
+        url = "https://exchange.goonus.io/exchange/api/v1/fiat"
         try:
-            root = ET.fromstring(text)
-            def elem_to_dict(e):
-                if not list(e) and (e.text is None or not e.text.strip()) and not e.attrib:
-                    return None
-                d = {}
-                for k, v in e.attrib.items():
-                    d[f"@{k}"] = v
-                children = list(e)
-                if children:
-                    for c in children:
-                        val = elem_to_dict(c)
-                        if val is None:
-                            continue
-                        if c.tag in d:
-                            if isinstance(d[c.tag], list):
-                                d[c.tag].append(val)
-                            else:
-                                d[c.tag] = [d[c.tag], val]
-                        else:
-                            d[c.tag] = val
-                text_val = e.text.strip() if e.text and e.text.strip() else None
-                if text_val:
-                    if d:
-                        d['#text'] = text_val
-                    else:
-                        return text_val
-                return d
-            xml_parsed = elem_to_dict(root)
-            return xml_parsed
+            resp = self.api_client.get(url, timeout=10, verify=False)
+        except Exception as e:
+            return f"Lỗi khi gọi API tiền tệ: {e}"
+
+        if not resp.get('ok'):
+            return f"Lỗi khi lấy dữ liệu tiền tệ: {resp.get('error')}"
+        parsed = resp.get('json')
+        text = resp.get('text') or ''
+
+        code_norm = (code or 'usd').strip().lower()
+
+        # Expected sample shape: {"data": [ {"name": "Đô la Mỹ", "code": "USD", "buy": "26061.00", "sell": "26381.00", ... } ] }
+        if isinstance(parsed, dict) and 'data' in parsed and isinstance(parsed['data'], list):
+            items = parsed['data']
+            for itm in items:
+                if not isinstance(itm, dict):
+                    continue
+                itm_code = str(itm.get('code') or '').strip().lower()
+                if itm_code == code_norm:
+                    name = itm.get('name') or itm.get('code') or code.upper()
+                    buy = itm.get('buy') or ''
+                    sell = itm.get('sell') or ''
+                    return {
+                        'name': str(name),
+                        'code': str(itm_code).upper(),
+                        'buy': str(buy),
+                        'sell': str(sell),
+                    }
+            return f"Không tìm thấy thông tin cho mã tiền tệ '{code}'."
+
+        # fallback: try to parse text as JSON and repeat
+        try:
+            j = json.loads(text)
+            if isinstance(j, dict) and 'data' in j and isinstance(j['data'], list):
+                for itm in j['data']:
+                    if not isinstance(itm, dict):
+                        continue
+                    itm_code = str(itm.get('code') or '').strip().lower()
+                    if itm_code == code_norm:
+                        name = itm.get('name') or itm.get('code') or code.upper()
+                        buy = itm.get('buy') or ''
+                        sell = itm.get('sell') or ''
+                        return {
+                            'name': str(name),
+                            'code': str(itm_code).upper(),
+                            'buy': str(buy),
+                            'sell': str(sell),
+                        }
         except Exception:
             pass
 
-        # Fallback: return raw text
-        return text
+        return "Không nhận được dữ liệu hợp lệ từ API tiền tệ."

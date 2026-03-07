@@ -24,15 +24,18 @@ A Telegram bot powered by Gemini AI.
 
 3. **Install required packages**
    ```powershell
-   pip install python-telegram-bot python-dotenv google-generativeai
+   pip install -r requirements.txt
    ```
 
 4. **Configure environment variables**
-   - Create a file named `BOT_TOKEN.env` in the project folder.
+   - Copy `BOT_TOKEN.env.example` thành `BOT_TOKEN.env` trong thư mục project.
    - Add your tokens:
      ```env
      TELE_BOT_TOKEN=your-telegram-bot-token
      GEMINI_API_KEY=your-gemini-api-key
+   MONGO_URI=your-mongodb-uri
+   MONGO_DB_NAME=Telegram_bot_database
+   MONGO_COLLECTION=gold-price-collection
      ```
 
 5. **Run the bot**

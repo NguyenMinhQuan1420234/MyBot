@@ -7,6 +7,15 @@ from telegram import MessageEntity
 
 agent = None
 
+THREAD_CHAT_ID = -1003835873764
+THREAD_ID = 2
+
+
+def _send_kwargs(chat_id):
+    if chat_id == THREAD_CHAT_ID:
+        return {'message_thread_id': THREAD_ID}
+    return {}
+
 def set_agent(provider, api_key, **kwargs):
     global agent
     agent = Agent(provider, api_key, **kwargs)
@@ -44,7 +53,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     ai_response = agent.ask(text)
     logging.info(f"Bot reply to User({chat_id}): {ai_response}")
     for i in range(0, len(ai_response), 4096):
-        await context.bot.send_message(chat_id=chat_id, text=ai_response[i:i+4096])
+        await context.bot.send_message(chat_id=chat_id, text=ai_response[i:i+4096], **_send_kwargs(chat_id))
 
 
 async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,16 +61,66 @@ async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
     await send_gold_to(chat_id, context)
 
 
+async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /money command. Usage: /money USD"""
+    chat_id = update.effective_chat.id
+    if not agent:
+        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id))
+        return
+    args = getattr(context, 'args', []) or []
+    note = ''
+    if not args:
+        code = 'usd'
+        note = 'Hãy nhập đơn vị tiền tệ bạn muốn sau câu lệnh\n'
+    else:
+        code = args[0]
+
+    try:
+        result = agent.get_money_rate(code)
+    except Exception as e:
+        result = f"Lỗi lấy thông tin tiền tệ: {e}"
+
+    # If agent returned structured dict with only the required keys, format to text
+    if isinstance(result, dict):
+        name = result.get('name', '')
+        buy = result.get('buy', '')
+        sell = result.get('sell', '')
+        text = f"{note}{name}:\n mua: {buy}\n bán: {sell}\n"
+    else:
+        text = f"{note}{result}"
+    for i in range(0, len(text), 4096):
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
+
+
+async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
+    """Respond to /help with supported commands summary."""
+    chat_id = update.effective_chat.id
+    text = "Bot dỏm Tele hiện đang hỗ trợ 2 lệnh /gold và /money"
+    await context.bot.send_message(chat_id=chat_id, text=text, **_send_kwargs(chat_id))
+
+
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Send gold price to a given chat id (used by command and scheduled jobs)."""
+    """Send gold price to a given chat id (used by command and scheduled jobs).
+
+    Uses `GoldPriceService.get_info()` so formatting matches CLI and watcher
+    output. The service also handles database comparisons and message
+    composition, keeping behavior consistent across components.
+    """
     logging.info(f"Sending gold price to chat {chat_id}")
     if not agent:
-        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.")
+        await context.bot.send_message(chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id))
         return
-    result = agent.get_gold_price()
-    if isinstance(result, (dict, list)):
-        text = json.dumps(result, ensure_ascii=False, indent=2)
-    else:
-        text = str(result)
+
+    try:
+        from api_client import APIClient
+        from crawl_gold_price import GoldPriceService
+        api_client = APIClient()
+        service = GoldPriceService(api_client)
+        result = service.get_info()
+        text = result.get('message') or json.dumps(result.get('data', {}), ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.exception('Failed fetching gold info in send_gold_to')
+        text = f"Lỗi lấy thông tin giá vàng: {e}"
+
     for i in range(0, len(text), 4096):
-        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096])
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
