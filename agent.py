@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional, Protocol
 from mcp_playwright_agent import MCPPlaywrightAgent
 from api_client import APIClient
 from crawl_gold_price import GoldPriceService
+try:
+    from crawl_hose_stock import HOSEStockService, HOSE_STOCK_COLLECTION
+except Exception:
+    HOSEStockService = None
+    HOSE_STOCK_COLLECTION = "hose-stock-collection"
 
 # Prefer requests if available, fall back to urllib
 try:
@@ -50,6 +55,13 @@ class Agent:
         # initialize gold price service with optional MongoDB URI for change computation
         mongo_uri = kwargs.get('mongo_uri')
         self.gold_service = GoldPriceService(self.api_client, mongo_uri=mongo_uri)
+        # initialize HOSE stock service
+        self.stock_service = None
+        if HOSEStockService:
+            try:
+                self.stock_service = HOSEStockService(self.api_client, mongo_uri=mongo_uri)
+            except Exception:
+                pass
 
         if self.provider == "gemini" and genai:
             genai.configure(api_key=api_key)
@@ -169,3 +181,24 @@ class Agent:
             pass
 
         return "Không nhận được dữ liệu hợp lệ từ API tiền tệ."
+
+    def get_stock_info(self, ticker: str = None):
+        """Fetch HOSE stock or index information.
+
+        Parameters
+        ----------
+        ticker:
+            Stock or index code (e.g. ``"VNM"``, ``"VNINDEX"``).
+            When ``None`` or empty, returns VN-Index data.
+
+        Returns
+        -------
+        dict with key ``message`` (formatted string) or an error string.
+        """
+        if self.stock_service is None:
+            return "Dịch vụ chứng khoán chưa khả dụng."
+        try:
+            result = self.stock_service.get_info(ticker or None)
+            return result
+        except Exception as e:
+            return f"Lỗi lấy thông tin chứng khoán: {e}"

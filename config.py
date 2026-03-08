@@ -10,6 +10,7 @@ except Exception:
 MONGO_URI = os.getenv("MONGO_URI", "")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "Telegram_bot_database")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "gold-price-collection")
+HOSE_STOCK_COLLECTION = os.getenv("HOSE_STOCK_COLLECTION", "hose-stock-collection")
 
 
 def get_mongo_uri() -> str:
