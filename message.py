@@ -95,8 +95,55 @@ async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
     """Respond to /help with supported commands summary."""
     chat_id = update.effective_chat.id
-    text = "Bot dỏm Tele hiện đang hỗ trợ 2 lệnh /gold và /money"
+    text = (
+        "Bot dỏm Tele hiện đang hỗ trợ các lệnh:\n"
+        "/gold – Giá vàng hiện tại\n"
+        "/money [mã] – Tỷ giá ngoại tệ (ví dụ: /money USD)\n"
+        "/stock [mã] – Thị trường chứng khoán HOSE\n"
+        "  Ví dụ: /stock hoặc /stock VNM hoặc /stock VNINDEX"
+    )
     await context.bot.send_message(chat_id=chat_id, text=text, **_send_kwargs(chat_id))
+
+
+async def handle_stock(update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stock command.  Usage: /stock [TICKER]
+
+    Examples::
+
+        /stock              – VN-Index overview
+        /stock VNINDEX      – explicit VN-Index
+        /stock VN30         – VN30 index
+        /stock VNM          – price for Vinamilk stock
+    """
+    chat_id = update.effective_chat.id
+    await send_stock_to(chat_id, context, ticker=(context.args or [None])[0])
+
+
+async def send_stock_to(chat_id, context: ContextTypes.DEFAULT_TYPE, ticker=None):
+    """Send HOSE market info to *chat_id*.  Used by command and scheduled jobs."""
+    logging.info("Sending HOSE stock info to chat %s (ticker=%s)", chat_id, ticker)
+    if not agent:
+        await context.bot.send_message(
+            chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id)
+        )
+        return
+
+    try:
+        if agent and agent.stock_service:
+            result = agent.stock_service.get_info(ticker)
+        else:
+            from api_client import APIClient
+            from crawl_hose_stock import HOSEStockService
+            api_client = APIClient()
+            service = HOSEStockService(api_client)
+            result = service.get_info(ticker)
+        text = result.get("message") or json.dumps(result.get("data", {}), ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.exception("Failed fetching HOSE stock info in send_stock_to")
+        text = f"Lỗi lấy thông tin chứng khoán: {e}"
+
+    for i in range(0, len(text), 4096):
+        await context.bot.send_message(chat_id=chat_id, text=text[i : i + 4096], **_send_kwargs(chat_id))
 
 
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):

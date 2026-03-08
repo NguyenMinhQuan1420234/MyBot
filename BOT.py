@@ -14,7 +14,7 @@ except Exception:
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
 
 import message as _message
-from message import handle_message, handle_gold, send_gold_to, handle_money, handle_help, set_agent
+from message import handle_message, handle_gold, send_gold_to, handle_money, handle_help, handle_stock, set_agent
 
 try:
     from config import MONGO_URI
@@ -25,6 +25,11 @@ try:
     from watcher import GoldWatcher
 except Exception:
     GoldWatcher = None
+
+try:
+    from hose_watcher import HOSEWatcher
+except Exception:
+    HOSEWatcher = None
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -138,6 +143,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler('gold', handle_gold))
     app.add_handler(CommandHandler('money', handle_money))
+    app.add_handler(CommandHandler('stock', handle_stock))
     app.add_handler(CommandHandler('help', handle_help))
 
     # ---- Job scheduling ----
@@ -174,6 +180,29 @@ def main():
         if watcher is not None:
             jobq.run_repeating(watcher.job, interval=300, first=30)
             logging.info('Registered GoldWatcher changes job (every 5 minutes)')
+
+        # ---- HOSE stock market watcher ----
+        hose_watcher = None
+        if HOSEWatcher is not None:
+            try:
+                mongo_uri = os.getenv('MONGO_URI', MONGO_URI or '')
+                hose_watcher = HOSEWatcher(mongo_uri, chat_id=CHAT_LIST)
+                logging.info('Registered HOSEWatcher')
+            except Exception:
+                logging.exception('Failed to register HOSEWatcher')
+
+        if hose_watcher is not None:
+            # Daily market-open summary at 09:00 GMT+7
+            t_open = dt_time(hour=9, minute=0, tzinfo=hanoi_tz) if hanoi_tz else dt_time(hour=9, minute=0)
+            jobq.run_daily(hose_watcher.job_info, t_open)
+            logging.info("Scheduled HOSE market open summary at 09:00")
+            # Daily market-close summary at 15:15 GMT+7
+            t_close = dt_time(hour=15, minute=15, tzinfo=hanoi_tz) if hanoi_tz else dt_time(hour=15, minute=15)
+            jobq.run_daily(hose_watcher.job_info, t_close)
+            logging.info("Scheduled HOSE market close summary at 15:15")
+            # Intraday change alerts every 30 minutes
+            jobq.run_repeating(hose_watcher.job, interval=1800, first=120)
+            logging.info('Registered HOSEWatcher change-detection job (every 30 minutes)')
 
     app.run_polling()
 
