@@ -72,6 +72,7 @@ ENV_KEY_MAP = {
     'openai': 'OPENAI_API_KEY',
     'xai': 'XAI_API_KEY',
     'azure': 'AZURE_API_KEY',
+    'claude': 'CLAUDE_API_KEY',
 }
 
 # ---------------------------------------------------------------------------
@@ -103,7 +104,7 @@ async def _scheduled_gold_job(context):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Telegram AI Bot")
-    parser.add_argument('--provider', type=str, choices=['gemini', 'openai', 'xai', 'azure'], default='gemini', help='AI provider to use')
+    parser.add_argument('--provider', type=str, choices=['gemini', 'openai', 'xai', 'azure', 'claude'], default='gemini', help='AI provider to use')
     parser.add_argument('--model', type=str, help='Model name (optional)')
     parser.add_argument('--api_base', type=str, help='Azure OpenAI API base (optional)')
     parser.add_argument('--deployment', type=str, help='Azure OpenAI deployment name (optional)')

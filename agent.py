@@ -37,6 +37,10 @@ try:
 except ImportError:
     openai = None
 # Azure OpenAI can use openai with endpoint config
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 
 
 class Agent:
@@ -68,6 +72,10 @@ class Agent:
             openai.api_type = "azure"
             openai.api_version = kwargs.get('api_version', '2023-05-15')
             self.azure_deployment = kwargs.get('deployment', 'gpt-35-turbo')
+        elif self.provider == "claude" and anthropic:
+            self.claude_client = anthropic.Anthropic(api_key=api_key)
+            self.claude_model = kwargs.get('model', 'claude-opus-4-5')
+            self.claude_tools = self._build_claude_tools()
         else:
             raise ValueError(f"Unsupported provider or missing package: {provider}")
 
@@ -97,10 +105,89 @@ class Agent:
                           {"role": "user", "content": prompt}]
             )
             result = completion.choices[0].message.content
+        elif self.provider == "claude" and anthropic:
+            result = self._ask_claude(prompt, system_prompt)
         else:
             result = "AI provider not available or not configured."
         logging.info(f"AI Response ({self.provider}): {result}")
         return result
+
+    def _build_claude_tools(self) -> List[Dict]:
+        """Define Claude Skills (tools) available to the Claude AI model."""
+        return [
+            {
+                "name": "get_gold_price",
+                "description": (
+                    "Lấy giá vàng hiện tại từ các nguồn uy tín tại Việt Nam "
+                    "(Mi Hồng, Doji, Ngọc Thẩm). Trả về bảng giá vàng mua/bán chi tiết."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "get_money_rate",
+                "description": (
+                    "Lấy tỷ giá ngoại tệ so với VND. "
+                    "Trả về giá mua và bán của đơn vị tiền tệ được chỉ định."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Mã tiền tệ ISO 4217 (ví dụ: USD, EUR, JPY, GBP, ...)"
+                        }
+                    },
+                    "required": ["code"]
+                }
+            }
+        ]
+
+    def _execute_claude_tool(self, tool_name: str, tool_input: Dict) -> str:
+        """Execute a Claude skill (tool) by name and return its result as a string."""
+        if tool_name == "get_gold_price":
+            result = self.get_gold_price()
+            return json.dumps(result, ensure_ascii=False, indent=2) if isinstance(result, dict) else str(result)
+        elif tool_name == "get_money_rate":
+            code = tool_input.get("code", "USD")
+            result = self.get_money_rate(code)
+            return json.dumps(result, ensure_ascii=False, indent=2) if isinstance(result, dict) else str(result)
+        return f"Unknown skill: {tool_name}"
+
+    def _ask_claude(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """Send a prompt to Claude with Skills (tool use) support and return the response."""
+        messages = [{"role": "user", "content": prompt}]
+        sys = system_prompt or "You are a helpful assistant."
+
+        while True:
+            response = self.claude_client.messages.create(
+                model=self.claude_model,
+                max_tokens=8192,
+                system=sys,
+                tools=self.claude_tools,
+                messages=messages,
+            )
+
+            if response.stop_reason == "tool_use":
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        logging.info(f"Claude skill call: {block.name}({block.input})")
+                        tool_output = self._execute_claude_tool(block.name, block.input)
+                        logging.info(f"Claude skill result for {block.name}: {tool_output[:200]}")
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": tool_output,
+                        })
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                text_parts = [block.text for block in response.content if hasattr(block, "text")]
+                return "".join(text_parts) or "Không có phản hồi từ Claude."
 
     def run_playwright(self, command):
         logging.info(f"Playwright Command: {command}")
