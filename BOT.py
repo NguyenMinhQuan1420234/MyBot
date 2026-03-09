@@ -14,7 +14,7 @@ except Exception:
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
 
 import message as _message
-from message import handle_message, handle_gold, send_gold_to, handle_money, handle_help, set_agent
+from message import handle_message, handle_gold, send_gold_to, handle_money, handle_help, set_agent, send_money_to
 
 try:
     from config import MONGO_URI
@@ -98,6 +98,15 @@ async def _scheduled_gold_job(context):
         except Exception:
             logging.exception("Failed sending scheduled gold to %s", cid)
 
+
+async def _scheduled_money_job(context):
+    """Send USD+JPY exchange rates daily at 09:00 UTC+7."""
+    for cid in CHAT_LIST:
+        try:
+            await send_money_to(cid, context)
+        except Exception:
+            logging.exception("Failed sending scheduled money rate to %s", cid)
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -170,6 +179,10 @@ def main():
             callback = watcher.job_info if watcher else _scheduled_gold_job
             jobq.run_daily(callback, t)
             logging.info("Scheduled gold info job at %02d:%02d", h, m)
+
+        money_t = dt_time(hour=9, minute=0, tzinfo=hanoi_tz) if hanoi_tz else dt_time(hour=9, minute=0)
+        jobq.run_daily(_scheduled_money_job, money_t)
+        logging.info("Scheduled money rate job at 09:00 UTC+7")
 
         if watcher is not None:
             jobq.run_repeating(watcher.job, interval=300, first=30)
