@@ -62,7 +62,10 @@ async def handle_gold(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /money command. Usage: /money USD"""
+    """Handle /money command. Usage: /money [CODE]
+    
+    With no argument returns both USD and JPY.
+    """
     chat_id = update.effective_chat.id
     if not agent:
         await context.bot.send_message(chat_id=chat_id, text="Agent not configured.", **_send_kwargs(chat_id))
@@ -70,8 +73,8 @@ async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
     args = getattr(context, 'args', []) or []
     note = ''
     if not args:
-        code = 'usd'
-        note = 'Hãy nhập đơn vị tiền tệ bạn muốn sau câu lệnh\n'
+        code = None
+        note = 'Hãy nhập đơn vị tiền tệ bạn muốn sau câu lệnh (VD: /money EUR)\n\n'
     else:
         code = args[0]
 
@@ -80,14 +83,23 @@ async def handle_money(update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         result = f"Lỗi lấy thông tin tiền tệ: {e}"
 
-    # If agent returned structured dict with only the required keys, format to text
-    if isinstance(result, dict):
-        name = result.get('name', '')
-        buy = result.get('buy', '')
-        sell = result.get('sell', '')
-        text = f"{note}{name}:\n mua: {buy}\n bán: {sell}\n"
+    def _format_rate(r) -> str:
+        if not isinstance(r, dict):
+            return str(r)
+        name = r.get('name', r.get('code', ''))
+        code_str = r.get('code', '')
+        lines = [f"💱 {name} ({code_str})"]
+        if r.get('buy_cash'):
+            lines.append(f"  Mua tiền mặt : {r['buy_cash']}")
+        if r.get('sell_cash'):
+            lines.append(f"  Bán tiền mặt : {r['sell_cash']}")
+        return '\n'.join(lines)
+
+    if isinstance(result, list):
+        text = note + '\n\n'.join(_format_rate(r) for r in result)
     else:
-        text = f"{note}{result}"
+        text = note + _format_rate(result)
+
     for i in range(0, len(text), 4096):
         await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
 
@@ -97,6 +109,39 @@ async def handle_help(update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = "Bot dỏm Tele hiện đang hỗ trợ 2 lệnh /gold và /money"
     await context.bot.send_message(chat_id=chat_id, text=text, **_send_kwargs(chat_id))
+
+
+async def send_money_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    """Send default USD+JPY exchange rates to a given chat id (scheduled job)."""
+    logging.info(f"Sending money rate to chat {chat_id}")
+    if not agent:
+        return
+    try:
+        result = agent.get_money_rate()
+    except Exception as e:
+        logging.exception('Failed fetching money rate in send_money_to')
+        await context.bot.send_message(chat_id=chat_id, text=f"Lỗi lấy tỷ giá: {e}", **_send_kwargs(chat_id))
+        return
+
+    def _format_rate(r) -> str:
+        if not isinstance(r, dict):
+            return str(r)
+        name = r.get('name', r.get('code', ''))
+        code_str = r.get('code', '')
+        lines = [f"💱 {name} ({code_str})"]
+        if r.get('buy_cash'):
+            lines.append(f"  Mua tiền mặt : {r['buy_cash']}")
+        if r.get('sell_cash'):
+            lines.append(f"  Bán tiền mặt : {r['sell_cash']}")
+        return '\n'.join(lines)
+
+    if isinstance(result, list):
+        text = '\n\n'.join(_format_rate(r) for r in result)
+    else:
+        text = _format_rate(result)
+
+    for i in range(0, len(text), 4096):
+        await context.bot.send_message(chat_id=chat_id, text=text[i:i+4096], **_send_kwargs(chat_id))
 
 
 async def send_gold_to(chat_id, context: ContextTypes.DEFAULT_TYPE):
