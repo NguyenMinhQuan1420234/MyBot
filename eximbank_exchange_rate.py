@@ -14,7 +14,6 @@ Usage:
 """
 
 import logging
-import time
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -41,16 +40,10 @@ _HEADERS = {
 }
 
 
-def _today_str() -> str:
-    """Return today's date as YYYYMMDD."""
-    return time.strftime("%Y%m%d")
-
-
 class EximbankExchangeRateService:
-    def __init__(self, api_client, branch_code: str = "1000", quote_count: int = 12):
+    def __init__(self, api_client, branch_code: str = "1000"):
         self.api_client = api_client
         self.branch_code = branch_code
-        self.quote_count = quote_count
 
     def get_rate(
         self, code: Union[str, List[str], None] = None
@@ -73,8 +66,6 @@ class EximbankExchangeRateService:
             codes = [code.strip().lower()]
         single = len(codes) == 1
         params = {
-            "strQuoteCNT": self.quote_count,
-            "strNoticeday": _today_str(),
             "strBRCD": self.branch_code,
         }
         try:
