@@ -1,12 +1,12 @@
 # MyBot
 
-A Telegram bot powered by Gemini AI (and other providers including Claude with Skills support).
+A Telegram bot powered by Gemini AI.
 
 ## Prerequisites
 
 - **Python 3.10 or newer** (recommended)
 - Telegram Bot Token
-- Gemini API Key (default) or API key for another supported provider
+- Gemini API Key
 
 ## Setup Instructions
 
@@ -42,39 +42,6 @@ A Telegram bot powered by Gemini AI (and other providers including Claude with S
    ```powershell
    python BOT.py
    ```
-
-## Supported AI Providers
-
-| Provider | CLI Flag | Env Variable | Notes |
-|----------|----------|--------------|-------|
-| Gemini (default) | `--provider gemini` | `GEMINI_API_KEY` | Google Gemini AI |
-| OpenAI | `--provider openai` | `OPENAI_API_KEY` | GPT models |
-| xAI | `--provider xai` | `XAI_API_KEY` | Grok models |
-| Azure OpenAI | `--provider azure` | `AZURE_API_KEY` | Azure-hosted OpenAI |
-| **Claude** | `--provider claude` | `CLAUDE_API_KEY` | Anthropic Claude with Skills |
-
-## Claude Skills
-
-When using the `claude` provider, the bot leverages **Claude Skills** (Anthropic tool use) to enable Claude to autonomously call built-in capabilities:
-
-| Skill | Description |
-|-------|-------------|
-| `get_gold_price` | Fetch live gold prices from Vietnamese sources (Mi Hồng, Doji, Ngọc Thẩm) |
-| `get_money_rate` | Fetch fiat exchange rates (USD, EUR, JPY, …) vs VND |
-
-Claude will automatically call these skills when needed to answer user questions, providing up-to-date financial data directly in its responses.
-
-### Example usage with Claude
-
-```powershell
-python BOT.py --provider claude --api-key your-claude-api-key
-```
-
-Or set `CLAUDE_API_KEY` in your `.env` file and run:
-
-```powershell
-python BOT.py --provider claude
-```
 
 ## Troubleshooting
 
