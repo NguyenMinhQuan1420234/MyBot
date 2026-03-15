@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Protocol
 from mcp_playwright_agent import MCPPlaywrightAgent
 from api_client import APIClient
 from crawl_gold_price import GoldPriceService
+from eximbank_exchange_rate import EximbankExchangeRateService
 
 # Prefer requests if available, fall back to urllib
 try:
@@ -50,6 +51,7 @@ class Agent:
         # initialize gold price service with optional MongoDB URI for change computation
         mongo_uri = kwargs.get('mongo_uri')
         self.gold_service = GoldPriceService(self.api_client, mongo_uri=mongo_uri)
+        self.eximbank_service = EximbankExchangeRateService(self.api_client)
 
         if self.provider == "gemini" and genai:
             genai.configure(api_key=api_key)
@@ -109,63 +111,10 @@ class Agent:
     def get_gold_price(self):
         return self.gold_service.get_snapshot()
 
-    def get_money_rate(self, code='usd'):
-        """Fetch fiat exchange info from external API and return formatted result.
+    def get_money_rate(self, code=None):
+        """Fetch exchange rate from Eximbank.
 
-        The API returns a JSON payload; we try to find the requested currency code
-        (case-insensitive). If not found, return a helpful message.
+        *code* can be a currency string (e.g. 'usd'), a list of strings,
+        or omitted to get both USD and JPY by default.
         """
-        url = "https://exchange.goonus.io/exchange/api/v1/fiat"
-        try:
-            resp = self.api_client.get(url, timeout=10, verify=False)
-        except Exception as e:
-            return f"Lỗi khi gọi API tiền tệ: {e}"
-
-        if not resp.get('ok'):
-            return f"Lỗi khi lấy dữ liệu tiền tệ: {resp.get('error')}"
-        parsed = resp.get('json')
-        text = resp.get('text') or ''
-
-        code_norm = (code or 'usd').strip().lower()
-
-        # Expected sample shape: {"data": [ {"name": "Đô la Mỹ", "code": "USD", "buy": "26061.00", "sell": "26381.00", ... } ] }
-        if isinstance(parsed, dict) and 'data' in parsed and isinstance(parsed['data'], list):
-            items = parsed['data']
-            for itm in items:
-                if not isinstance(itm, dict):
-                    continue
-                itm_code = str(itm.get('code') or '').strip().lower()
-                if itm_code == code_norm:
-                    name = itm.get('name') or itm.get('code') or code.upper()
-                    buy = itm.get('buy') or ''
-                    sell = itm.get('sell') or ''
-                    return {
-                        'name': str(name),
-                        'code': str(itm_code).upper(),
-                        'buy': str(buy),
-                        'sell': str(sell),
-                    }
-            return f"Không tìm thấy thông tin cho mã tiền tệ '{code}'."
-
-        # fallback: try to parse text as JSON and repeat
-        try:
-            j = json.loads(text)
-            if isinstance(j, dict) and 'data' in j and isinstance(j['data'], list):
-                for itm in j['data']:
-                    if not isinstance(itm, dict):
-                        continue
-                    itm_code = str(itm.get('code') or '').strip().lower()
-                    if itm_code == code_norm:
-                        name = itm.get('name') or itm.get('code') or code.upper()
-                        buy = itm.get('buy') or ''
-                        sell = itm.get('sell') or ''
-                        return {
-                            'name': str(name),
-                            'code': str(itm_code).upper(),
-                            'buy': str(buy),
-                            'sell': str(sell),
-                        }
-        except Exception:
-            pass
-
-        return "Không nhận được dữ liệu hợp lệ từ API tiền tệ."
+        return self.eximbank_service.get_rate(code)
