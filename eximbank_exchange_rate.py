@@ -66,7 +66,7 @@ class EximbankExchangeRateService:
             codes = [code.strip().lower()]
         single = len(codes) == 1
         params = {
-            "strBRCD": self.branch_code,
+            "strBRCD": "1000",
         }
         try:
             resp = self.api_client.get(
