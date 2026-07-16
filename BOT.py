@@ -177,15 +177,15 @@ def main():
         for h, m in SCHEDULE_TIMES:
             t = dt_time(hour=h, minute=m, tzinfo=hanoi_tz) if hanoi_tz else dt_time(hour=h, minute=m)
             callback = watcher.job_info if watcher else _scheduled_gold_job
-            jobq.run_daily(callback, t)
+            # jobq.run_daily(callback, t)
             logging.info("Scheduled gold info job at %02d:%02d", h, m)
 
         money_t = dt_time(hour=9, minute=0, tzinfo=hanoi_tz) if hanoi_tz else dt_time(hour=9, minute=0)
-        jobq.run_daily(_scheduled_money_job, money_t)
+        # jobq.run_daily(_scheduled_money_job, money_t)
         logging.info("Scheduled money rate job at 09:00 UTC+7")
 
         if watcher is not None:
-            jobq.run_repeating(watcher.job, interval=300, first=30)
+            # jobq.run_repeating(watcher.job, interval=300, first=30)
             logging.info('Registered GoldWatcher changes job (every 5 minutes)')
 
     app.run_polling()
